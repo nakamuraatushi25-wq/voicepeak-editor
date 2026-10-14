@@ -1,0 +1,23 @@
+[package]
+name = "voicepeak-editor"
+version = "0.1.0"
+description = "VOICEPEAK の台本から音声・字幕を作って並べる編集ソフト"
+edition = "2021"
+
+[lib]
+name = "voicepeak_editor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hound = "3.5"
+encoding_rs = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

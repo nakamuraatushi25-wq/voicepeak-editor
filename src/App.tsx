@@ -1,0 +1,401 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import type { Character, Line, Project, Settings } from "./types";
+import { api } from "./lib/api";
+import { splitText } from "./lib/split";
+import { audioKey, layout, totalDuration } from "./lib/timeline";
+import { buildExo } from "./lib/exo";
+import { buildAss, buildSrt } from "./lib/ass";
+import { emptyProject, importScript, newCharacter, newLine, parseProject } from "./lib/project";
+import { playOnce, usePlayer } from "./lib/player";
+import { CharacterPanel } from "./components/CharacterPanel";
+import { ScriptEditor } from "./components/ScriptEditor";
+import { Timeline } from "./components/Timeline";
+import { Preview } from "./components/Preview";
+
+const SETTINGS_KEY = "voicepeak-editor.settings";
+
+function loadSettings(): Settings {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}");
+    return { voicepeakPath: s.voicepeakPath ?? "", ffmpegPath: s.ffmpegPath ?? "ffmpeg" };
+  } catch {
+    return { voicepeakPath: "", ffmpegPath: "ffmpeg" };
+  }
+}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+export default function App() {
+  const [project, setProject] = useState<Project>(emptyProject);
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  const [settings, setSettings] = useState<Settings>(loadSettings);
+  const [narrators, setNarrators] = useState<string[]>([]);
+  const [emotionMap, setEmotionMap] = useState<Record<string, string[]>>({});
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+  const [dialog, setDialog] = useState<"settings" | "import" | null>(null);
+  const [pxPerSec, setPxPerSec] = useState(60);
+
+  const placed = useMemo(() => layout(project.lines, project.characters), [project]);
+  const total = totalDuration(placed);
+  const player = usePlayer(placed, total);
+
+  // 設定の保存と VOICEPEAK の自動検出
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch {
+      /* 保存できなくても動作は続ける */
+    }
+  }, [settings]);
+
+  useEffect(() => {
+    if (settings.voicepeakPath) return;
+    api.detectVoicepeak().then((p) => p && setSettings((s) => ({ ...s, voicepeakPath: p })), () => undefined);
+  }, [settings.voicepeakPath]);
+
+  useEffect(() => {
+    if (!settings.voicepeakPath) return;
+    api.listNarrators(settings.voicepeakPath).then(setNarrators, (e) => setMessage(errorText(e)));
+  }, [settings.voicepeakPath]);
+
+  // 使っているナレーターの感情一覧を取りに行く
+  const usedNarrators = project.characters.map((c) => c.narrator).join("\n");
+  useEffect(() => {
+    if (!settings.voicepeakPath) return;
+    for (const n of new Set(usedNarrators.split("\n"))) {
+      if (emotionMap[n]) continue;
+      api.listEmotions(settings.voicepeakPath, n).then(
+        (list) => setEmotionMap((m) => ({ ...m, [n]: list })),
+        () => setEmotionMap((m) => ({ ...m, [n]: [] })),
+      );
+    }
+  }, [usedNarrators, settings.voicepeakPath, emotionMap]);
+
+  const emotionsOf = useCallback((n: string) => emotionMap[n] ?? [], [emotionMap]);
+
+  const updateLines = (fn: (lines: Line[]) => Line[]) => setProject((p) => ({ ...p, lines: fn(p.lines) }));
+  const updateLine = (line: Line) => updateLines((ls) => ls.map((l) => (l.id === line.id ? line : l)));
+  const updateCharacter = (c: Character) =>
+    setProject((p) => ({ ...p, characters: p.characters.map((x) => (x.id === c.id ? c : x)) }));
+
+  // ---- 音声生成 ----
+  const generate = async (line: Line): Promise<Line> => {
+    const c = project.characters.find((x) => x.id === line.characterId);
+    if (!c) throw new Error("キャラが見つかりません");
+    if (!settings.voicepeakPath) throw new Error("先に設定で VOICEPEAK の場所を指定してください");
+    const key = audioKey(line, c);
+    const dir = await api.audioDir();
+    const sep = dir.includes("\\") ? "\\" : "/";
+    const res = await api.synthesize({
+      exe: settings.voicepeakPath,
+      chunks: splitText(line.text),
+      narrator: c.narrator,
+      emotions: Object.entries(line.emotions),
+      speed: line.speed,
+      pitch: line.pitch,
+      out: `${dir}${sep}${line.id}_${Date.now()}.wav`,
+    });
+    return { ...line, audio: { ...res, key } };
+  };
+
+  const generateOne = async (line: Line) => {
+    setBusyId(line.id);
+    try {
+      updateLine(await generate(line));
+      setMessage("");
+    } catch (e) {
+      setMessage(errorText(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const generateAll = async () => {
+    const byId = new Map(project.characters.map((c) => [c.id, c]));
+    const targets = project.lines.filter((l) => {
+      const c = byId.get(l.characterId);
+      return c && l.text.trim() && l.audio?.key !== audioKey(l, c);
+    });
+    let done = 0;
+    for (const line of targets) {
+      setBusyId(line.id);
+      setMessage(`生成中 ${done + 1} / ${targets.length}`);
+      try {
+        const next = await generate(line);
+        updateLines((ls) => ls.map((l) => (l.id === next.id ? { ...l, audio: next.audio } : l)));
+        done++;
+      } catch (e) {
+        setMessage(`${done + 1} 行目で止まりました: ${errorText(e)}`);
+        setBusyId(null);
+        return;
+      }
+    }
+    setBusyId(null);
+    setMessage(targets.length ? `${done} 行を生成しました` : "すべて生成済みです");
+  };
+
+  // ---- ファイル ----
+  const saveProject = async (as = false) => {
+    let path = projectPath;
+    if (!path || as) {
+      path = await save({ filters: [{ name: "VOICEPEAK Editor", extensions: ["vpe.json"] }], defaultPath: "project.vpe.json" });
+      if (!path) return;
+    }
+    await api.writeText(path, JSON.stringify(project, null, 2));
+    setProjectPath(path);
+    setMessage("保存しました");
+  };
+
+  const openProject = async () => {
+    const path = await open({ filters: [{ name: "VOICEPEAK Editor", extensions: ["json"] }] });
+    if (typeof path !== "string") return;
+    try {
+      setProject(parseProject(await api.readText(path)));
+      setProjectPath(path);
+      setSelectedId(null);
+      player.seek(0);
+    } catch (e) {
+      setMessage(errorText(e));
+    }
+  };
+
+  const withAudio = () => placed.filter((p) => p.line.audio);
+  const clips = () => withAudio().map((p) => ({ path: p.line.audio!.path, start: p.start }));
+
+  const exportAs = async (kind: "exo" | "wav" | "srt" | "mp4") => {
+    const out = await save({ filters: [{ name: kind.toUpperCase(), extensions: [kind] }], defaultPath: `output.${kind}` });
+    if (!out) return;
+    try {
+      if (kind !== "srt" && withAudio().length < placed.length) {
+        setMessage("未生成の行があります。先に「すべて生成」をしてください");
+        return;
+      }
+      setMessage("書き出し中…");
+      if (kind === "exo") await api.writeText(out, buildExo(placed, project.video), "shift_jis");
+      if (kind === "srt") await api.writeText(out, buildSrt(placed));
+      if (kind === "wav") await api.exportWav(clips(), total, out);
+      if (kind === "mp4") {
+        const v = project.video;
+        await api.exportMp4({
+          ffmpeg: settings.ffmpegPath || "ffmpeg",
+          clips: clips(),
+          total,
+          ass: buildAss(placed, v),
+          width: v.width,
+          height: v.height,
+          fps: v.fps,
+          background: v.background,
+          out,
+        });
+      }
+      setMessage(`${out} に書き出しました`);
+    } catch (e) {
+      setMessage(errorText(e));
+    }
+  };
+
+  // ---- 行の操作 ----
+  const addLine = (afterId: string | null) => {
+    const after = project.lines.find((l) => l.id === afterId);
+    const c = project.characters.find((x) => x.id === after?.characterId) ?? project.characters[0];
+    const line = newLine(c);
+    updateLines((ls) => {
+      const i = after ? ls.indexOf(after) + 1 : ls.length;
+      return [...ls.slice(0, i), line, ...ls.slice(i)];
+    });
+    setSelectedId(line.id);
+  };
+
+  const moveLine = (id: string, delta: -1 | 1) =>
+    updateLines((ls) => {
+      const i = ls.findIndex((l) => l.id === id);
+      const j = i + delta;
+      if (j < 0 || j >= ls.length) return ls;
+      const next = [...ls];
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+
+  return (
+    <div className="app">
+      <header className="toolbar">
+        <strong className="brand">VOICEPEAK Editor</strong>
+        <button onClick={() => { setProject(emptyProject()); setProjectPath(null); }}>新規</button>
+        <button onClick={openProject}>開く</button>
+        <button onClick={() => saveProject()}>保存</button>
+        <button onClick={() => saveProject(true)}>名前を付けて保存</button>
+        <span className="sep" />
+        <button onClick={() => setDialog("import")}>台本を貼り付け</button>
+        <button className="primary" disabled={!!busyId} onClick={generateAll}>すべて生成</button>
+        <span className="sep" />
+        <button onClick={player.playing ? player.stop : player.play}>{player.playing ? "■ 停止" : "▶ 再生"}</button>
+        <span className="time">{player.time.toFixed(1)} / {total.toFixed(1)} 秒</span>
+        <span className="sep" />
+        <select value="" onChange={(e) => e.target.value && exportAs(e.target.value as "exo")}>
+          <option value="">書き出し…</option>
+          <option value="exo">AviUtl（.exo）</option>
+          <option value="mp4">動画（.mp4）</option>
+          <option value="wav">音声（.wav）</option>
+          <option value="srt">字幕（.srt）</option>
+        </select>
+        <button onClick={() => setDialog("settings")}>設定</button>
+      </header>
+
+      <main className="workspace">
+        <CharacterPanel
+          characters={project.characters}
+          narrators={narrators}
+          emotionsOf={emotionsOf}
+          onChange={updateCharacter}
+          onAdd={() => setProject((p) => ({ ...p, characters: [...p.characters, newCharacter(p.characters.length, narrators[0])] }))}
+          onRemove={(id) =>
+            setProject((p) => ({
+              ...p,
+              characters: p.characters.filter((c) => c.id !== id),
+              lines: p.lines.filter((l) => l.characterId !== id),
+            }))
+          }
+        />
+        <ScriptEditor
+          lines={project.lines}
+          characters={project.characters}
+          selectedId={selectedId}
+          busyId={busyId}
+          emotionsOf={emotionsOf}
+          onSelect={setSelectedId}
+          onChange={updateLine}
+          onAdd={addLine}
+          onRemove={(id) => updateLines((ls) => ls.filter((l) => l.id !== id))}
+          onMove={moveLine}
+          onGenerate={generateOne}
+          onPlay={(l) => l.audio && playOnce(l.audio.path)}
+        />
+        <section className="panel side">
+          <Preview placed={placed} time={player.time} video={project.video} />
+          <label className="zoom">
+            拡大
+            <input type="range" min={10} max={200} value={pxPerSec} onChange={(e) => setPxPerSec(+e.target.value)} />
+          </label>
+        </section>
+      </main>
+
+      <Timeline
+        placed={placed}
+        characters={project.characters}
+        total={total}
+        time={player.time}
+        selectedId={selectedId}
+        pxPerSec={pxPerSec}
+        onSeek={player.seek}
+        onSelect={setSelectedId}
+      />
+
+      <footer className="status">{message || "準備完了"}</footer>
+
+      {dialog === "settings" && (
+        <SettingsDialog
+          settings={settings}
+          project={project}
+          onClose={() => setDialog(null)}
+          onSave={(s, video) => {
+            setSettings(s);
+            setProject((p) => ({ ...p, video }));
+            setDialog(null);
+          }}
+        />
+      )}
+      {dialog === "import" && (
+        <ImportDialog
+          characters={project.characters}
+          onClose={() => setDialog(null)}
+          onImport={(lines, replace) => {
+            updateLines((ls) => (replace ? lines : [...ls, ...lines]));
+            setDialog(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function SettingsDialog(props: {
+  settings: Settings;
+  project: Project;
+  onClose: () => void;
+  onSave: (s: Settings, video: Project["video"]) => void;
+}) {
+  const [s, setS] = useState(props.settings);
+  const [v, setV] = useState(props.project.video);
+  const pickExe = async (key: keyof Settings) => {
+    const p = await open({ filters: [{ name: "実行ファイル", extensions: ["exe", "*"] }] });
+    if (typeof p === "string") setS({ ...s, [key]: p });
+  };
+  return (
+    <div className="modal" onMouseDown={props.onClose}>
+      <div className="dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <h2>設定</h2>
+        <label>
+          VOICEPEAK の場所
+          <div className="row">
+            <input value={s.voicepeakPath} placeholder="C:\Program Files\VOICEPEAK\voicepeak.exe" onChange={(e) => setS({ ...s, voicepeakPath: e.target.value })} />
+            <button onClick={() => pickExe("voicepeakPath")}>参照</button>
+          </div>
+        </label>
+        <label>
+          ffmpeg の場所（MP4 書き出し用）
+          <div className="row">
+            <input value={s.ffmpegPath} onChange={(e) => setS({ ...s, ffmpegPath: e.target.value })} />
+            <button onClick={() => pickExe("ffmpegPath")}>参照</button>
+          </div>
+        </label>
+        <h3>動画</h3>
+        <div className="grid">
+          <label>幅<input type="number" value={v.width} onChange={(e) => setV({ ...v, width: +e.target.value })} /></label>
+          <label>高さ<input type="number" value={v.height} onChange={(e) => setV({ ...v, height: +e.target.value })} /></label>
+          <label>fps<input type="number" value={v.fps} onChange={(e) => setV({ ...v, fps: +e.target.value })} /></label>
+          <label>背景色<input type="color" value={v.background} onChange={(e) => setV({ ...v, background: e.target.value })} /></label>
+          <label>フォント<input value={v.font} onChange={(e) => setV({ ...v, font: e.target.value })} /></label>
+          <label>文字サイズ<input type="number" value={v.fontSize} onChange={(e) => setV({ ...v, fontSize: +e.target.value })} /></label>
+        </div>
+        <footer>
+          <button onClick={props.onClose}>キャンセル</button>
+          <button className="primary" onClick={() => props.onSave(s, v)}>保存</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function ImportDialog(props: {
+  characters: Character[];
+  onClose: () => void;
+  onImport: (lines: Line[], replace: boolean) => void;
+}) {
+  const [text, setText] = useState("");
+  const [replace, setReplace] = useState(false);
+  const names = props.characters.map((c) => c.name);
+  return (
+    <div className="modal" onMouseDown={props.onClose}>
+      <div className="dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <h2>台本を貼り付け</h2>
+        <p className="hint">
+          1 行に 1 セリフ。「{names[0]}：セリフ」のように名前をつけるとそのキャラで読みます（使える名前: {names.join("、")}）。
+        </p>
+        <textarea rows={14} value={text} onChange={(e) => setText(e.target.value)} placeholder={`${names[0]}：こんにちは\n${names[1] ?? names[0]}：よろしく`} />
+        <label className="check">
+          <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} />
+          今の台本を置き換える
+        </label>
+        <footer>
+          <button onClick={props.onClose}>キャンセル</button>
+          <button className="primary" disabled={!text.trim()} onClick={() => props.onImport(importScript(text, props.characters), replace)}>
+            取り込む
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
