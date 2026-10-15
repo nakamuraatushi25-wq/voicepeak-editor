@@ -7,6 +7,8 @@ interface Props {
   characters: Character[];
   selectedId: string | null;
   busyId: string | null;
+  /** 再生位置（「今の位置から話す」用） */
+  currentTime: number;
   emotionsOf: (narrator: string) => string[];
   onSelect: (id: string) => void;
   onChange: (line: Line) => void;
@@ -59,7 +61,8 @@ export function ScriptEditor(props: Props) {
                   placeholder="セリフを入力"
                   onChange={(e) => props.onChange({ ...line, text: e.target.value })}
                 />
-                <span className={fresh ? "badge ok" : "badge"}>
+                <span className={fresh ? "badge ok" : "badge"} title={line.at !== undefined ? `${line.at.toFixed(1)}秒から話す` : undefined}>
+                  {line.at !== undefined && "⏱ "}
                   {busyId === line.id ? "生成中…" : fresh ? `${line.audio!.duration.toFixed(1)}秒` : "未生成"}
                 </span>
                 <button title="この行を生成" disabled={!!busyId || !line.text.trim()} onClick={() => props.onGenerate(line)}>
@@ -83,6 +86,33 @@ export function ScriptEditor(props: Props) {
                     後の間 {line.pause.toFixed(1)}秒
                     <input type="range" min={0} max={3} step={0.1} value={line.pause} onChange={(e) => props.onChange({ ...line, pause: +e.target.value })} />
                   </label>
+                  <div className="start-row">
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={line.at !== undefined}
+                        onChange={(e) =>
+                          props.onChange({ ...line, at: e.target.checked ? Math.round(props.currentTime * 10) / 10 : undefined })
+                        }
+                      />
+                      話し始める時刻を決める
+                    </label>
+                    {line.at !== undefined && (
+                      <>
+                        <input
+                          type="number"
+                          min={0}
+                          step={0.1}
+                          value={line.at}
+                          onChange={(e) => props.onChange({ ...line, at: Math.max(0, +e.target.value) })}
+                        />
+                        秒から
+                        <button onClick={() => props.onChange({ ...line, at: Math.round(props.currentTime * 10) / 10 })}>
+                          今の再生位置にする
+                        </button>
+                      </>
+                    )}
+                  </div>
                   <EmotionSliders names={emotionsOf(c.narrator)} values={line.emotions} onChange={(emotions) => props.onChange({ ...line, emotions })} />
                   <div className="actions">
                     <button onClick={() => props.onMove(line.id, -1)}>↑ 上へ</button>

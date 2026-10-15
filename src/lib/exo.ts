@@ -1,4 +1,4 @@
-import type { Character, PlacedLine, VideoSettings } from "../types";
+import type { Character, Movie, PlacedLine, VideoSettings } from "../types";
 import type { Cue } from "./subtitle";
 import { mouthSegments } from "./mouth";
 
@@ -6,11 +6,19 @@ import { mouthSegments } from "./mouth";
  * AviUtl 拡張編集のオブジェクトファイル（.exo）を作る。
  * キャラ数を n、キャラの番号を i（0 始まり）として、下から
  *   立ち絵（口閉じ）: 2i+1 / 口パク: 2i+2 / 音声: 2n+i+1 / 字幕: 3n+i+1
- * の順に重ねる。書き出し時は Shift_JIS・CRLF に変換すること（Rust 側で行う）。
+ * の順に重ねる。背景動画があるときは 1 に動画、2 にその音声を置き、ほかは 2 つ上にずらす。
+ * 書き出し時は Shift_JIS・CRLF に変換すること（Rust 側で行う）。
  */
-export function buildExo(placed: PlacedLine[], cues: Cue[], characters: Character[], video: VideoSettings): string {
+export function buildExo(
+  placed: PlacedLine[],
+  cues: Cue[],
+  characters: Character[],
+  video: VideoSettings,
+  movie?: Movie,
+): string {
   const toFrame = (sec: number) => Math.round(sec * video.fps);
-  const total = placed.reduce((m, p) => Math.max(m, p.end), 0);
+  const total = placed.reduce((m, p) => Math.max(m, p.end), movie?.duration ?? 0);
+  const base = movie ? 2 : 0;
   const length = Math.max(1, toFrame(total));
   const n = characters.length;
   const index = new Map(characters.map((c, i) => [c.id, i]));
@@ -29,7 +37,7 @@ export function buildExo(placed: PlacedLine[], cues: Cue[], characters: Characte
   const header = (startSec: number, endSec: number, layer: number, audio = false) => {
     const start = toFrame(startSec) + 1;
     const end = Math.max(start, toFrame(endSec));
-    out.push(`[${obj}]`, `start=${start}`, `end=${end}`, `layer=${layer}`, "overlay=1", audio ? "audio=1" : "camera=0");
+    out.push(`[${obj}]`, `start=${start}`, `end=${end}`, `layer=${layer + base}`, "overlay=1", audio ? "audio=1" : "camera=0");
   };
   const draw = (x: number, y: number, zoom: number) =>
     out.push(
@@ -53,6 +61,38 @@ export function buildExo(placed: PlacedLine[], cues: Cue[], characters: Characte
     draw(x, y, p.scale);
     obj++;
   };
+
+  if (movie) {
+    // 動画は画面に収まる大きさにして中央に置く
+    const zoom = Math.min(video.width / movie.width, video.height / movie.height) * 100;
+    header(0, movie.duration, 1 - base);
+    out.push(
+      `[${obj}.0]`,
+      "_name=動画ファイル",
+      "再生位置=1",
+      "再生速度=100.0",
+      "ループ再生=0",
+      "アルファチャンネルを読み込む=0",
+      `file=${movie.path}`,
+    );
+    draw(0, 0, zoom);
+    obj++;
+    header(0, movie.duration, 2 - base, true);
+    out.push(
+      `[${obj}.0]`,
+      "_name=音声ファイル",
+      "再生位置=0.00",
+      "再生速度=100.0",
+      "ループ再生=0",
+      "動画ファイルと連携=1",
+      `file=${movie.path}`,
+      `[${obj}.1]`,
+      "_name=標準再生",
+      `音量=${movie.volume.toFixed(1)}`,
+      "左右=0.0",
+    );
+    obj++;
+  }
 
   characters.forEach((c, i) => {
     if (!c.portrait || total <= 0) return;

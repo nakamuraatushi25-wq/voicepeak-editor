@@ -47,6 +47,7 @@ export const api = {
     height: number;
     fps: number;
     background: string;
+    movie?: { path: string; volume: number };
     out: string;
   }) => invoke<void>("export_mp4", { req }),
 };
