@@ -100,3 +100,5 @@ label.check { flex-direction: row; align-items: center; gap: 6px; }
 .portrait-editor .slot span { font-size: 22px; line-height: 60px; color: var(--muted); }
 .portrait-editor .slot small { font-size: 10px; color: var(--muted); }
 .subtitle { white-space: pre-line; z-index: 1; }
+.toolbar .update { margin-left: auto; color: #fff; background: #2e7d32; border-color: #2e7d32; border-radius: 6px; padding: 4px 10px; font-size: 13px; }
+.toolbar .update.error { background: var(--danger); border-color: var(--danger); }

@@ -6,6 +6,7 @@ import { assColor, assTime, buildAss, buildSrt } from "./ass";
 import { buildCues, paginate, phrases, textWidth } from "./subtitle";
 import { mouthSegments } from "./mouth";
 import { emptyProject, importScript, newCharacter } from "./project";
+import { compareVersions, pickUpdate } from "./update";
 
 describe("splitText", () => {
   it("短い文はそのまま", () => {
@@ -145,5 +146,36 @@ describe("importScript", () => {
       [b.id, "こんにちは"],
       [b.id, "続きです"],
     ]);
+  });
+});
+
+describe("更新の確認", () => {
+  const release = (tag: string) => ({
+    tag_name: tag,
+    html_url: "https://example.com/release",
+    body: "変更点",
+    assets: [
+      { name: "latest.json", browser_download_url: "https://example.com/latest.json" },
+      { name: "VOICEPEAK.編集ソフト_0.3.0_x64-setup.exe", browser_download_url: "https://example.com/setup.exe" },
+    ],
+  });
+
+  it("版番号を数字として比べる", () => {
+    expect(compareVersions("v0.10.0", "0.9.9")).toBeGreaterThan(0);
+    expect(compareVersions("0.2.0", "v0.2.0")).toBe(0);
+    expect(compareVersions("0.2.0", "0.2.1")).toBeLessThan(0);
+  });
+
+  it("新しい版があればインストーラーの URL を返す", () => {
+    expect(pickUpdate(release("v0.3.0"), "0.2.0")).toEqual({
+      version: "0.3.0",
+      downloadUrl: "https://example.com/setup.exe",
+      notes: "変更点",
+    });
+  });
+
+  it("同じか古い版なら何も返さない", () => {
+    expect(pickUpdate(release("v0.2.0"), "0.2.0")).toBeNull();
+    expect(pickUpdate(release("v0.1.0"), "0.2.0")).toBeNull();
   });
 });

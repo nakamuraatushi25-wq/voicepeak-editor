@@ -26,11 +26,15 @@ VOICEPEAK で台本を一括読み上げし、音声と字幕をタイムライ�
 
 ## インストールと更新
 
-1. GitHub の「Actions」タブで、いちばん上の成功した（緑のチェック）ビルドを開く
-2. ページ下の「Artifacts」から `voicepeak-editor-windows` をダウンロードして展開
-3. 中の `...-setup.exe` を実行
+[Releases](https://github.com/nakamuraatushi25-wq/voicepeak-editor/releases/latest) から `…-setup.exe` をダウンロードして実行します。
 
-更新するときも同じ手順で、新しい `setup.exe` を実行するだけです。上書きインストールされ、設定・作ったプロジェクト・生成済みの音声はそのまま残ります。
+一度入れたあとは、新しい版が出るとアプリ上部に「⬆ 新しい版 … があります」ボタンが出ます。押すとインストーラーがダウンロードされるので、アプリを閉じてから実行してください。上書きで更新され、設定・プロジェクト・生成済みの音声はそのまま残ります。
+
+## 新しい版の出し方
+
+1. `package.json` と `src-tauri/tauri.conf.json` の `version` を上げる（例: 0.2.0）
+2. main にマージしてから `v0.2.0` のタグを push する
+3. `release` ワークフローがインストーラーを Releases に公開する。アプリはそれを見て更新ボタンを出す
 
 ## 開発の始め方
 
