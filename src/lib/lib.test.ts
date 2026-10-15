@@ -5,7 +5,7 @@ import { buildExo, encodeExoText } from "./exo";
 import { assColor, assTime, buildAss, buildSrt } from "./ass";
 import { buildCues, paginate, phrases, textWidth } from "./subtitle";
 import { mouthSegments } from "./mouth";
-import { emptyProject, importScript, newCharacter } from "./project";
+import { emptyProject, importScript, newCharacter, newLine } from "./project";
 import { compareVersions, pickUpdate } from "./update";
 
 describe("splitText", () => {
@@ -38,6 +38,30 @@ describe("layout", () => {
       [2.5, 3.5, 1],
     ]);
     expect(totalDuration(placed)).toBe(3.5);
+  });
+
+  it("時刻を決めた行はそこから話し、次の行はそのあとに続く", () => {
+    const p = emptyProject();
+    const [a, b] = p.characters;
+    p.lines = [newLine(a, "一"), newLine(b, "二"), newLine(b, "三")];
+    p.lines.forEach((l) => {
+      l.audio = { path: "x.wav", duration: 1, key: "" };
+      l.pause = 0;
+    });
+    p.lines[1].at = 5;
+    const placed = layout(p.lines, p.characters);
+    expect(placed.map((x) => x.start)).toEqual([0, 5, 6]);
+    // 背景動画のほうが長ければ全体の長さは動画に合わせる
+    expect(totalDuration(placed, 10)).toBe(10);
+  });
+
+  it("同じキャラのセリフは重ならないよう後ろにずらす", () => {
+    const p = emptyProject();
+    const [a] = p.characters;
+    p.lines = [newLine(a, "一"), newLine(a, "二")];
+    p.lines.forEach((l) => (l.audio = { path: "x.wav", duration: 2, key: "" }));
+    p.lines[1].at = 1;
+    expect(layout(p.lines, p.characters).map((x) => x.start)).toEqual([0, 2]);
   });
 
   it("設定が変わるとキーも変わる", () => {
@@ -82,6 +106,25 @@ describe("exo", () => {
     // 中心から右へ 0.3 画面分、下端そろえ（1080/2 - 800*0.5/2）
     expect(exo).toContain("X=576.0\nY=340.0");
     expect(mouthSegments(placed, p.characters[0])).toEqual([[0.1, 0.3, 2]]);
+  });
+});
+
+describe("exo（背景動画あり）", () => {
+  it("1 に動画、2 にその音声を置き、ほかのレイヤーを 2 つ上げる", () => {
+    const p = emptyProject();
+    p.lines[0].audio = { path: "C:\\a.wav", duration: 1, key: "" };
+    const placed = layout(p.lines.slice(0, 1), p.characters);
+    const movie = { path: "C:\\m.mp4", duration: 10, width: 1280, height: 720, volume: 40 };
+    const exo = buildExo(placed, buildCues(placed, p.video), p.characters, p.video, movie);
+    expect(exo).toContain("length=300");
+    expect(exo).toContain("[0]\nstart=1\nend=300\nlayer=1\noverlay=1\ncamera=0\n[0.0]\n_name=動画ファイル");
+    // 1280x720 を 1920x1080 に合わせて 150%
+    expect(exo).toContain("拡大率=150.00");
+    expect(exo).toContain("[1]\nstart=1\nend=300\nlayer=2\noverlay=1\naudio=1");
+    expect(exo).toContain("動画ファイルと連携=1\nfile=C:\\m.mp4");
+    expect(exo).toContain("音量=40.0");
+    // 1 人目の声は 5 → 7
+    expect(exo).toContain("[2]\nstart=1\nend=30\nlayer=7\noverlay=1\naudio=1");
   });
 });
 

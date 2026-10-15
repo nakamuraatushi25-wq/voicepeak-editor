@@ -8,6 +8,7 @@ import { buildExo } from "./lib/exo";
 import { buildAss, buildSrt } from "./lib/ass";
 import { buildCues } from "./lib/subtitle";
 import { mouthSegments } from "./lib/mouth";
+import { fileName, videoInfo } from "./lib/media";
 import { emptyProject, importScript, newCharacter, newLine, parseProject } from "./lib/project";
 import { playOnce, usePlayer } from "./lib/player";
 import { CharacterPanel } from "./components/CharacterPanel";
@@ -61,7 +62,7 @@ export default function App({ initialProject, demo = false }: { initialProject?:
 
   const placed = useMemo(() => layout(project.lines, project.characters), [project]);
   const cues = useMemo(() => buildCues(placed, project.video), [placed, project.video]);
-  const total = totalDuration(placed);
+  const total = totalDuration(placed, project.movie?.duration);
   const player = usePlayer(placed, total);
 
   // 設定の保存と VOICEPEAK の自動検出
@@ -218,7 +219,7 @@ export default function App({ initialProject, demo = false }: { initialProject?:
       const hasPortraits = project.characters.some((c) => c.portrait);
       const ready = kind !== "srt" && hasPortraits ? await ensureMouth() : placed;
       if (kind === "exo")
-        await api.writeText(out, buildExo(ready, cues, project.characters, project.video), "shift_jis");
+        await api.writeText(out, buildExo(ready, cues, project.characters, project.video, project.movie), "shift_jis");
       if (kind === "srt") await api.writeText(out, buildSrt(cues));
       if (kind === "wav") await api.exportWav(clips(), total, out);
       if (kind === "mp4") {
@@ -246,6 +247,7 @@ export default function App({ initialProject, demo = false }: { initialProject?:
           height: v.height,
           fps: v.fps,
           background: v.background,
+          movie: project.movie && { path: project.movie.path, volume: project.movie.volume },
           out,
         });
       }
@@ -267,7 +269,13 @@ export default function App({ initialProject, demo = false }: { initialProject?:
     }
     setOutput(
       kind === "exo"
-        ? { title: "AviUtl（.exo）の中身", text: buildExo(placed, cues, demoNames(project.characters), project.video) }
+        ? { title: "AviUtl（.exo）の中身", text: buildExo(
+                placed,
+                cues,
+                demoNames(project.characters),
+                project.video,
+                project.movie && { ...project.movie, path: "C:\\動画\\背景.mp4" },
+              ) }
         : { title: "字幕（.srt）の中身", text: buildSrt(cues) },
     );
   };
@@ -284,6 +292,24 @@ export default function App({ initialProject, demo = false }: { initialProject?:
       return null;
     }
   };
+
+  /** 背景動画を選ぶ。画面の大きさは変えず、動画のほうを画面に収める */
+  const pickMovie = async () => {
+    const path = await open({ filters: [{ name: "動画", extensions: ["mp4", "mov", "webm", "m4v"] }] });
+    if (typeof path !== "string") return;
+    try {
+      const info = await videoInfo(path);
+      setProject((p) => ({
+        ...p,
+        movie: { path, ...info, volume: p.movie?.volume ?? 100 },
+      }));
+      player.seek(0);
+      setMessage(`動画を読み込みました（${info.duration.toFixed(1)} 秒）。セリフを選んで「話し始める時刻」を決めると好きな場面で話します`);
+    } catch (e) {
+      setMessage(errorText(e));
+    }
+  };
+  const setMovie = (movie: Project["movie"]) => setProject((p) => ({ ...p, movie }));
 
   // ---- 行の操作 ----
   const addLine = (afterId: string | null) => {
@@ -359,6 +385,7 @@ export default function App({ initialProject, demo = false }: { initialProject?:
           characters={project.characters}
           selectedId={selectedId}
           busyId={busyId}
+          currentTime={player.time}
           emotionsOf={emotionsOf}
           onSelect={setSelectedId}
           onChange={updateLine}
@@ -369,7 +396,46 @@ export default function App({ initialProject, demo = false }: { initialProject?:
           onPlay={(l) => l.audio && playOnce(l.audio.path)}
         />
         <section className="panel side">
-          <Preview placed={placed} cues={cues} characters={project.characters} time={player.time} video={project.video} />
+          <Preview
+            placed={placed}
+            cues={cues}
+            characters={project.characters}
+            time={player.time}
+            playing={player.playing}
+            video={project.video}
+            movie={project.movie}
+          />
+          <div className="movie-box">
+            <h2>背景動画</h2>
+            {project.movie ? (
+              <>
+                <span className="name" title={project.movie.path}>
+                  {fileName(project.movie.path)}（{project.movie.duration.toFixed(1)} 秒）
+                </span>
+                <label>
+                  もとの音の大きさ {project.movie.volume}%
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={project.movie.volume}
+                    onChange={(e) => setMovie({ ...project.movie!, volume: +e.target.value })}
+                  />
+                </label>
+                <div className="row">
+                  <button onClick={pickMovie}>別の動画にする</button>
+                  <button onClick={() => setMovie(undefined)}>外す</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="hint">動画を読み込むと、その上にセリフ・字幕・立ち絵を重ねられます。</p>
+                <div className="row">
+                  <button onClick={pickMovie}>動画を読み込む</button>
+                </div>
+              </>
+            )}
+          </div>
           <label className="zoom">
             拡大
             <input type="range" min={10} max={200} value={pxPerSec} onChange={(e) => setPxPerSec(+e.target.value)} />
@@ -383,9 +449,11 @@ export default function App({ initialProject, demo = false }: { initialProject?:
         total={total}
         time={player.time}
         selectedId={selectedId}
+        movie={project.movie}
         pxPerSec={pxPerSec}
         onSeek={player.seek}
         onSelect={setSelectedId}
+        onMoveStart={(id, at) => updateLines((ls) => ls.map((l) => (l.id === id ? { ...l, at } : l)))}
       />
 
       <footer className="status">{message || "準備完了"}</footer>
