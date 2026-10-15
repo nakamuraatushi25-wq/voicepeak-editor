@@ -144,7 +144,7 @@ export default function App() {
   const saveProject = async (as = false) => {
     let path = projectPath;
     if (!path || as) {
-      path = await save({ filters: [{ name: "VOICEPEAK Editor", extensions: ["vpe.json"] }], defaultPath: "project.vpe.json" });
+      path = await save({ filters: [{ name: "プロジェクト", extensions: ["vpe.json"] }], defaultPath: "project.vpe.json" });
       if (!path) return;
     }
     await api.writeText(path, JSON.stringify(project, null, 2));
@@ -153,7 +153,7 @@ export default function App() {
   };
 
   const openProject = async () => {
-    const path = await open({ filters: [{ name: "VOICEPEAK Editor", extensions: ["json"] }] });
+    const path = await open({ filters: [{ name: "プロジェクト", extensions: ["json"] }] });
     if (typeof path !== "string") return;
     try {
       setProject(parseProject(await api.readText(path)));
@@ -269,7 +269,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="toolbar">
-        <strong className="brand">VOICEPEAK Editor</strong>
+        <strong className="brand">VOICEPEAK 編集ソフト</strong>
         <button onClick={() => { setProject(emptyProject()); setProjectPath(null); }}>新規</button>
         <button onClick={openProject}>開く</button>
         <button onClick={() => saveProject()}>保存</button>
@@ -403,7 +403,7 @@ function SettingsDialog(props: {
         <div className="grid">
           <label>幅<input type="number" value={v.width} onChange={(e) => setV({ ...v, width: +e.target.value })} /></label>
           <label>高さ<input type="number" value={v.height} onChange={(e) => setV({ ...v, height: +e.target.value })} /></label>
-          <label>fps<input type="number" value={v.fps} onChange={(e) => setV({ ...v, fps: +e.target.value })} /></label>
+          <label>フレームレート<input type="number" value={v.fps} onChange={(e) => setV({ ...v, fps: +e.target.value })} /></label>
           <label>背景色<input type="color" value={v.background} onChange={(e) => setV({ ...v, background: e.target.value })} /></label>
           <label>フォント<input value={v.font} onChange={(e) => setV({ ...v, font: e.target.value })} /></label>
           <label>文字サイズ<input type="number" value={v.fontSize} onChange={(e) => setV({ ...v, fontSize: +e.target.value })} /></label>

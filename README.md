@@ -1,4 +1,4 @@
-# VOICEPEAK Editor
+# VOICEPEAK 編集ソフト
 
 VOICEPEAK で台本を一括読み上げし、音声と字幕をタイムラインに並べて、AviUtl 用の `.exo` や MP4 に書き出す編集ソフトです。
 
@@ -23,6 +23,14 @@ VOICEPEAK で台本を一括読み上げし、音声と字幕をタイムライ�
 - Windows 10 / 11（macOS でも動く想定）
 - VOICEPEAK（`C:\Program Files\VOICEPEAK\voicepeak.exe` なら自動で見つけます）
 - MP4 書き出しをする場合は [ffmpeg](https://ffmpeg.org/)
+
+## インストールと更新
+
+1. GitHub の「Actions」タブで、いちばん上の成功した（緑のチェック）ビルドを開く
+2. ページ下の「Artifacts」から `voicepeak-editor-windows` をダウンロードして展開
+3. 中の `...-setup.exe` を実行
+
+更新するときも同じ手順で、新しい `setup.exe` を実行するだけです。上書きインストールされ、設定・作ったプロジェクト・生成済みの音声はそのまま残ります。
 
 ## 開発の始め方
 
