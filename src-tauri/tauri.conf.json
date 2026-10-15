@@ -48,19 +48,7 @@
         ],
         "displayLanguageSelector": false
       }
-    },
-    "createUpdaterArtifacts": true
-  },
-  "mainBinaryName": "voicepeak-editor",
-  "plugins": {
-    "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI0OThGRkEwRjlFRjMyQzYKUldUR011LzVvUCtZSkg1aXFpVTVFOTFLQWM5Rm1RUnEza1pKbEx2UmQ4RktVNkVWUUtZOTlKanYK",
-      "endpoints": [
-        "https://github.com/nakamuraatushi25-wq/voicepeak-editor/releases/latest/download/latest.json"
-      ],
-      "windows": {
-        "installMode": "passive"
-      }
     }
-  }
+  },
+  "mainBinaryName": "voicepeak-editor"
 }

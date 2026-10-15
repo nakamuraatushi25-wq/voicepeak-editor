@@ -28,17 +28,13 @@ VOICEPEAK で台本を一括読み上げし、音声と字幕をタイムライ�
 
 [Releases](https://github.com/nakamuraatushi25-wq/voicepeak-editor/releases/latest) から `…-setup.exe` をダウンロードして実行します。
 
-一度入れたあとは、新しい版が出るとアプリ上部に「⬆ 新しい版 … に更新」ボタンが出ます。押すと自動でダウンロード・インストールして再起動します。設定・プロジェクト・生成済みの音声はそのまま残ります。
-
-（リポジトリが非公開のあいだはアプリから更新を確認できません。その場合は Actions の成功したビルドの「Artifacts」から `voicepeak-editor-windows` をダウンロードして実行してください。）
+一度入れたあとは、新しい版が出るとアプリ上部に「⬆ 新しい版 … があります」ボタンが出ます。押すとインストーラーがダウンロードされるので、アプリを閉じてから実行してください。上書きで更新され、設定・プロジェクト・生成済みの音声はそのまま残ります。
 
 ## 新しい版の出し方
 
 1. `package.json` と `src-tauri/tauri.conf.json` の `version` を上げる（例: 0.2.0）
 2. main にマージしてから `v0.2.0` のタグを push する
-3. `release` ワークフローが署名つきインストーラーと更新情報（`latest.json`）を Releases に公開する
-
-署名には GitHub の Secrets に `TAURI_SIGNING_PRIVATE_KEY`（と空の `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）が必要です。この鍵をなくすと、配布済みのアプリに更新を届けられなくなります。
+3. `release` ワークフローがインストーラーを Releases に公開する。アプリはそれを見て更新ボタンを出す
 
 ## 開発の始め方
 

@@ -30,10 +30,7 @@ function loadSettings(): Settings {
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function App() {
-  const [initial] = useState<Project>(emptyProject);
-  const [project, setProject] = useState<Project>(initial);
-  /** 最後に保存（または開いた）時点の中身。違えば未保存の変更がある */
-  const [savedJson, setSavedJson] = useState(() => JSON.stringify(initial));
+  const [project, setProject] = useState<Project>(emptyProject);
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [narrators, setNarrators] = useState<string[]>([]);
@@ -152,7 +149,6 @@ export default function App() {
       if (!path) return;
     }
     await api.writeText(path, JSON.stringify(project, null, 2));
-    setSavedJson(JSON.stringify(project));
     setProjectPath(path);
     setMessage("保存しました");
   };
@@ -161,9 +157,7 @@ export default function App() {
     const path = await open({ filters: [{ name: "プロジェクト", extensions: ["json"] }] });
     if (typeof path !== "string") return;
     try {
-      const loaded = parseProject(await api.readText(path));
-      setProject(loaded);
-      setSavedJson(JSON.stringify(loaded));
+      setProject(parseProject(await api.readText(path)));
       setProjectPath(path);
       setSelectedId(null);
       player.seek(0);
@@ -277,16 +271,7 @@ export default function App() {
     <div className="app">
       <header className="toolbar">
         <strong className="brand">VOICEPEAK 編集ソフト</strong>
-        <button
-          onClick={() => {
-            const p = emptyProject();
-            setProject(p);
-            setSavedJson(JSON.stringify(p));
-            setProjectPath(null);
-          }}
-        >
-          新規
-        </button>
+        <button onClick={() => { setProject(emptyProject()); setProjectPath(null); }}>新規</button>
         <button onClick={openProject}>開く</button>
         <button onClick={() => saveProject()}>保存</button>
         <button onClick={() => saveProject(true)}>名前を付けて保存</button>
@@ -305,7 +290,7 @@ export default function App() {
           <option value="srt">字幕（.srt）</option>
         </select>
         <button onClick={() => setDialog("settings")}>設定</button>
-        <UpdateBanner hasUnsaved={JSON.stringify(project) !== savedJson} />
+        <UpdateBanner />
       </header>
 
       <main className="workspace">

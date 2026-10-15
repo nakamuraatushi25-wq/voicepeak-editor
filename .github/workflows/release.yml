@@ -1,7 +1,7 @@
 name: release
 
-# v0.2.0 のようなタグを push すると、署名つきインストーラーと
-# アプリ内更新用の latest.json を GitHub Releases に公開する。
+# v0.2.0 のようなタグを push すると、インストーラーを GitHub Releases に公開する。
+# アプリは起動時に最新の Release を見て、新しければ更新ボタンを出す。
 # タグの数字は tauri.conf.json と package.json の version にそろえること。
 on:
   push:
@@ -28,12 +28,9 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: VOICEPEAK 編集ソフト ${{ github.ref_name }}
-          releaseBody: 下の「…-setup.exe」をダウンロードして実行してください。インストール済みの場合はアプリ内の更新ボタンからも更新できます。
+          releaseBody: 下の「…-setup.exe」をダウンロードして実行してください。インストール済みの場合も、新しいインストーラーを実行すれば上書きで更新されます。
           releaseDraft: false
           prerelease: false
-          includeUpdaterJson: true

@@ -22,8 +22,7 @@ jobs:
       - run: npm test
       - run: cargo test
         working-directory: src-tauri
-      # 確認用ビルドなので更新用の署名はしない（署名は release.yml で行う）
-      - run: npm run tauri build -- --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - run: npm run tauri build
       - uses: actions/upload-artifact@v4
         with:
           name: voicepeak-editor-windows
