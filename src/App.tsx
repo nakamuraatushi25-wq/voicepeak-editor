@@ -6,6 +6,8 @@ import { splitText } from "./lib/split";
 import { audioKey, layout, totalDuration } from "./lib/timeline";
 import { buildExo } from "./lib/exo";
 import { buildAss, buildSrt } from "./lib/ass";
+import { buildCues } from "./lib/subtitle";
+import { mouthSegments } from "./lib/mouth";
 import { emptyProject, importScript, newCharacter, newLine, parseProject } from "./lib/project";
 import { playOnce, usePlayer } from "./lib/player";
 import { CharacterPanel } from "./components/CharacterPanel";
@@ -39,6 +41,7 @@ export default function App() {
   const [pxPerSec, setPxPerSec] = useState(60);
 
   const placed = useMemo(() => layout(project.lines, project.characters), [project]);
+  const cues = useMemo(() => buildCues(placed, project.video), [placed, project.video]);
   const total = totalDuration(placed);
   const player = usePlayer(placed, total);
 
@@ -141,7 +144,7 @@ export default function App() {
   const saveProject = async (as = false) => {
     let path = projectPath;
     if (!path || as) {
-      path = await save({ filters: [{ name: "VOICEPEAK Editor", extensions: ["vpe.json"] }], defaultPath: "project.vpe.json" });
+      path = await save({ filters: [{ name: "プロジェクト", extensions: ["vpe.json"] }], defaultPath: "project.vpe.json" });
       if (!path) return;
     }
     await api.writeText(path, JSON.stringify(project, null, 2));
@@ -150,7 +153,7 @@ export default function App() {
   };
 
   const openProject = async () => {
-    const path = await open({ filters: [{ name: "VOICEPEAK Editor", extensions: ["json"] }] });
+    const path = await open({ filters: [{ name: "プロジェクト", extensions: ["json"] }] });
     if (typeof path !== "string") return;
     try {
       setProject(parseProject(await api.readText(path)));
@@ -163,6 +166,20 @@ export default function App() {
   };
 
   const withAudio = () => placed.filter((p) => p.line.audio);
+
+  /** 口パクデータのない古い音声を解析して、配置済みの行に反映する */
+  const ensureMouth = async () => {
+    const missing = withAudio().filter((p) => !p.line.audio!.mouth);
+    if (missing.length === 0) return placed;
+    const mouths = new Map<string, string>();
+    for (const p of missing) mouths.set(p.line.id, await api.analyzeMouth(p.line.audio!.path));
+    updateLines((ls) =>
+      ls.map((l) => (mouths.has(l.id) && l.audio ? { ...l, audio: { ...l.audio, mouth: mouths.get(l.id) } } : l)),
+    );
+    return placed.map((p) =>
+      mouths.has(p.line.id) ? { ...p, line: { ...p.line, audio: { ...p.line.audio!, mouth: mouths.get(p.line.id) } } } : p,
+    );
+  };
   const clips = () => withAudio().map((p) => ({ path: p.line.audio!.path, start: p.start }));
 
   const exportAs = async (kind: "exo" | "wav" | "srt" | "mp4") => {
@@ -174,16 +191,33 @@ export default function App() {
         return;
       }
       setMessage("書き出し中…");
-      if (kind === "exo") await api.writeText(out, buildExo(placed, project.video), "shift_jis");
-      if (kind === "srt") await api.writeText(out, buildSrt(placed));
+      const hasPortraits = project.characters.some((c) => c.portrait);
+      const ready = kind !== "srt" && hasPortraits ? await ensureMouth() : placed;
+      if (kind === "exo")
+        await api.writeText(out, buildExo(ready, cues, project.characters, project.video), "shift_jis");
+      if (kind === "srt") await api.writeText(out, buildSrt(cues));
       if (kind === "wav") await api.exportWav(clips(), total, out);
       if (kind === "mp4") {
         const v = project.video;
         await api.exportMp4({
           ffmpeg: settings.ffmpegPath || "ffmpeg",
+          portraits: project.characters.flatMap((c) =>
+            c.portrait
+              ? [
+                  {
+                    closed: c.portrait.closed,
+                    open: c.portrait.open,
+                    half: c.portrait.half,
+                    x: c.portrait.x,
+                    scale: c.portrait.scale,
+                    segments: mouthSegments(ready, c),
+                  },
+                ]
+              : [],
+          ),
           clips: clips(),
           total,
-          ass: buildAss(placed, v),
+          ass: buildAss(cues, v),
           width: v.width,
           height: v.height,
           fps: v.fps,
@@ -194,6 +228,19 @@ export default function App() {
       setMessage(`${out} に書き出しました`);
     } catch (e) {
       setMessage(errorText(e));
+    }
+  };
+
+  /** 画像を選んで、その大きさと一緒に返す */
+  const pickImage = async (): Promise<{ path: string; width: number; height: number } | null> => {
+    const path = await open({ filters: [{ name: "画像", extensions: ["png", "webp", "jpg", "jpeg"] }] });
+    if (typeof path !== "string") return null;
+    try {
+      const [width, height] = await api.imageSize(path);
+      return { path, width, height };
+    } catch (e) {
+      setMessage(errorText(e));
+      return null;
     }
   };
 
@@ -222,7 +269,7 @@ export default function App() {
   return (
     <div className="app">
       <header className="toolbar">
-        <strong className="brand">VOICEPEAK Editor</strong>
+        <strong className="brand">VOICEPEAK 編集ソフト</strong>
         <button onClick={() => { setProject(emptyProject()); setProjectPath(null); }}>新規</button>
         <button onClick={openProject}>開く</button>
         <button onClick={() => saveProject()}>保存</button>
@@ -250,6 +297,7 @@ export default function App() {
           narrators={narrators}
           emotionsOf={emotionsOf}
           onChange={updateCharacter}
+          onPickImage={pickImage}
           onAdd={() => setProject((p) => ({ ...p, characters: [...p.characters, newCharacter(p.characters.length, narrators[0])] }))}
           onRemove={(id) =>
             setProject((p) => ({
@@ -274,7 +322,7 @@ export default function App() {
           onPlay={(l) => l.audio && playOnce(l.audio.path)}
         />
         <section className="panel side">
-          <Preview placed={placed} time={player.time} video={project.video} />
+          <Preview placed={placed} cues={cues} characters={project.characters} time={player.time} video={project.video} />
           <label className="zoom">
             拡大
             <input type="range" min={10} max={200} value={pxPerSec} onChange={(e) => setPxPerSec(+e.target.value)} />
@@ -355,7 +403,7 @@ function SettingsDialog(props: {
         <div className="grid">
           <label>幅<input type="number" value={v.width} onChange={(e) => setV({ ...v, width: +e.target.value })} /></label>
           <label>高さ<input type="number" value={v.height} onChange={(e) => setV({ ...v, height: +e.target.value })} /></label>
-          <label>fps<input type="number" value={v.fps} onChange={(e) => setV({ ...v, fps: +e.target.value })} /></label>
+          <label>フレームレート<input type="number" value={v.fps} onChange={(e) => setV({ ...v, fps: +e.target.value })} /></label>
           <label>背景色<input type="color" value={v.background} onChange={(e) => setV({ ...v, background: e.target.value })} /></label>
           <label>フォント<input value={v.font} onChange={(e) => setV({ ...v, font: e.target.value })} /></label>
           <label>文字サイズ<input type="number" value={v.fontSize} onChange={(e) => setV({ ...v, fontSize: +e.target.value })} /></label>

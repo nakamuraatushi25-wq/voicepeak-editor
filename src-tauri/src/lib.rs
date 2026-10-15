@@ -24,6 +24,14 @@ struct SynthRequest {
 struct SynthResult {
     path: String,
     duration: f64,
+    mouth: String,
+}
+
+/// プレビュー用の口パクは 30fps で持つ
+const MOUTH_FPS: u32 = 30;
+
+fn mouth_string(path: &Path) -> Result<String, String> {
+    Ok(audio::mouth_levels(path, MOUTH_FPS)?.iter().map(|l| char::from(b'0' + l)).collect())
 }
 
 #[tauri::command]
@@ -68,7 +76,23 @@ async fn synthesize(req: SynthRequest) -> Result<SynthResult, String> {
             let _ = std::fs::remove_file(p);
         }
     }
-    Ok(SynthResult { path: req.out.clone(), duration: audio::duration_sec(&out)? })
+    Ok(SynthResult {
+        path: req.out.clone(),
+        duration: audio::duration_sec(&out)?,
+        mouth: mouth_string(&out)?,
+    })
+}
+
+/// 口パクデータを持っていない古い音声用
+#[tauri::command]
+async fn analyze_mouth(path: String) -> Result<String, String> {
+    mouth_string(Path::new(&path))
+}
+
+#[tauri::command]
+fn image_size(path: String) -> Result<(usize, usize), String> {
+    let s = imagesize::size(&path).map_err(|e| format!("画像を読めません: {e}"))?;
+    Ok((s.width, s.height))
 }
 
 #[tauri::command]
@@ -113,8 +137,49 @@ async fn export_wav(clips: Vec<ClipIn>, total: f64, out: String) -> Result<(), S
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PortraitTrack {
+    closed: String,
+    open: String,
+    half: Option<String>,
+    /// 画面幅に対する中心の位置（0〜1）
+    x: f64,
+    /// 拡大率（%）
+    scale: f64,
+    /// 口が開いている区間 (開始秒, 終了秒, 1 半開き / 2 開き)。重ならず昇順
+    segments: Vec<(f64, f64, u8)>,
+}
+
+/// ffmpeg の concat 用リスト。口の状態ごとに画像を切り替えた動画として読ませる
+fn concat_list(p: &PortraitTrack, total: f64) -> String {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let image = |level: u8| match level {
+        0 => &p.closed,
+        1 => p.half.as_ref().unwrap_or(&p.open),
+        _ => &p.open,
+    };
+    let mut out = String::from("ffconcat version 1.0\n");
+    let mut push = |level: u8, dur: f64| {
+        if dur > 0.0005 {
+            out += &format!("file {}\nduration {:.4}\n", quote(image(level)), dur);
+        }
+    };
+    let mut t = 0.0;
+    for &(start, end, level) in &p.segments {
+        push(0, start - t);
+        push(level, end - start.max(t));
+        t = end.max(t);
+    }
+    push(0, (total - t).max(0.04));
+    // 最後の画像は duration が無視されるのでもう一度並べる
+    out += &format!("file {}\n", quote(&p.closed));
+    out
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Mp4Request {
     ffmpeg: String,
+    portraits: Vec<PortraitTrack>,
     clips: Vec<ClipIn>,
     total: f64,
     ass: String,
@@ -139,26 +204,42 @@ async fn export_mp4(req: Mp4Request) -> Result<(), String> {
     audio::mix(&clips, &wav, req.total)?;
     std::fs::write(work.join("subs.ass"), &req.ass).map_err(|e| e.to_string())?;
 
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        format!("color=c={}:s={}x{}:r={}", req.background, req.width, req.height, req.fps),
+        "-i".into(),
+        "mix.wav".into(),
+    ];
+    // 立ち絵は 1 キャラ 1 入力。下から順に重ね、最後に字幕をのせる
+    let mut graph = String::from("[0:v]null[v0]");
+    for (i, p) in req.portraits.iter().enumerate() {
+        let list = format!("portrait{i}.txt");
+        std::fs::write(work.join(&list), concat_list(p, req.total)).map_err(|e| e.to_string())?;
+        args.extend(["-f", "concat", "-safe", "0", "-i"].map(String::from));
+        args.push(list);
+        let input = i + 2;
+        let s = p.scale / 100.0;
+        graph += &format!(
+            ";[{input}:v]scale=iw*{s}:ih*{s},format=rgba[p{i}];[v{i}][p{i}]overlay=x=main_w*{x}-overlay_w/2:y=main_h-overlay_h:eof_action=repeat[v{n}]",
+            x = p.x,
+            n = i + 1
+        );
+    }
+    graph += &format!(";[v{}]subtitles=subs.ass[out]", req.portraits.len());
+    args.extend(
+        [
+            "-filter_complex", &graph, "-map", "[out]", "-map", "1:a", "-r",
+            &req.fps.to_string(), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+            "-shortest", &req.out,
+        ]
+        .map(String::from),
+    );
+
     let mut cmd = Command::new(&req.ffmpeg);
-    cmd.current_dir(&work).args([
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        &format!("color=c={}:s={}x{}:r={}", req.background, req.width, req.height, req.fps),
-        "-i",
-        "mix.wav",
-        "-vf",
-        "subtitles=subs.ass",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-shortest",
-        &req.out,
-    ]);
+    cmd.current_dir(&work).args(&args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -183,6 +264,8 @@ pub fn run() {
             list_narrators,
             list_emotions,
             synthesize,
+            analyze_mouth,
+            image_size,
             audio_dir,
             read_text_file,
             write_text_file,
@@ -230,8 +313,33 @@ mod tests {
         assert!((res.duration - 2.0).abs() < 0.01);
 
         let mp4 = dir.path().join("out.mp4");
+        assert_eq!(res.mouth.len(), 60);
+
+        // 立ち絵の代わりに色付きの半透明 PNG を 2 枚作る
+        let closed = dir.path().join("closed.png");
+        let open = dir.path().join("open.png");
+        for (p, c) in [(&closed, "blue"), (&open, "red")] {
+            let ok = Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+                .arg(format!("color=c={c}@0.8:s=60x90,format=rgba"))
+                .args(["-frames:v", "1"])
+                .arg(p)
+                .status()
+                .unwrap();
+            assert!(ok.success());
+        }
+        let portrait = |x: f64| PortraitTrack {
+            closed: closed.to_string_lossy().into_owned(),
+            open: open.to_string_lossy().into_owned(),
+            half: None,
+            x,
+            scale: 100.0,
+            segments: vec![(0.2, 0.5, 2), (0.6, 1.0, 1)],
+        };
+
         tauri::async_runtime::block_on(export_mp4(Mp4Request {
             ffmpeg: "ffmpeg".into(),
+            portraits: vec![portrait(0.2), portrait(0.8)],
             clips: vec![ClipIn { path: wav.clone(), start: 0.0 }, ClipIn { path: wav, start: 2.5 }],
             total: 4.5,
             ass: "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: c0,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00F7C34F,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:02.00,c0,,0,0,0,,テスト\n".into(),
@@ -243,5 +351,37 @@ mod tests {
         }))
         .unwrap();
         assert!(std::fs::metadata(&mp4).unwrap().len() > 1000);
+
+        // 0.3 秒の時点では右のキャラ（x=0.8）の口が開いて赤くなっている
+        let probe = |t: &str| {
+            Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-ss", t, "-i"])
+                .arg(&mp4)
+                .args(["-frames:v", "1", "-vf", "crop=4:4:254:148", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap()
+                .stdout
+        };
+        let open_px = probe("0.3");
+        let closed_px = probe("1.5");
+        assert!(open_px[0] > open_px[2], "開いた口は赤: {open_px:?}");
+        assert!(closed_px[2] > closed_px[0], "閉じた口は青: {closed_px:?}");
+    }
+
+    #[test]
+    fn concat_list_fills_gaps_with_closed_mouth() {
+        let p = PortraitTrack {
+            closed: "C:\\a\\closed.png".into(),
+            open: "it's.png".into(),
+            half: None,
+            x: 0.5,
+            scale: 100.0,
+            segments: vec![(1.0, 1.5, 2)],
+        };
+        let list = concat_list(&p, 3.0);
+        assert_eq!(
+            list,
+            "ffconcat version 1.0\nfile 'C:\\a\\closed.png'\nduration 1.0000\nfile 'it'\\''s.png'\nduration 0.5000\nfile 'C:\\a\\closed.png'\nduration 1.5000\nfile 'C:\\a\\closed.png'\n"
+        );
     }
 }

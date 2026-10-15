@@ -91,3 +91,12 @@ label.check { flex-direction: row; align-items: center; gap: 6px; }
 .dialog .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 12px; }
 .dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .zoom { margin-top: auto; }
+
+.portrait { position: absolute; bottom: 0; transform: translateX(-50%); pointer-events: none; }
+.portrait-editor h3 { margin-top: 10px; }
+.portrait-editor .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.portrait-editor .slot { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px; height: 92px; }
+.portrait-editor .slot img { max-width: 100%; height: 60px; object-fit: contain; }
+.portrait-editor .slot span { font-size: 22px; line-height: 60px; color: var(--muted); }
+.portrait-editor .slot small { font-size: 10px; color: var(--muted); }
+.subtitle { white-space: pre-line; z-index: 1; }

@@ -3,6 +3,8 @@ import { splitText } from "./split";
 import { audioKey, layout, totalDuration } from "./timeline";
 import { buildExo, encodeExoText } from "./exo";
 import { assColor, assTime, buildAss, buildSrt } from "./ass";
+import { buildCues, paginate, phrases, textWidth } from "./subtitle";
+import { mouthSegments } from "./mouth";
 import { emptyProject, importScript, newCharacter } from "./project";
 
 describe("splitText", () => {
@@ -56,13 +58,64 @@ describe("exo", () => {
     const p = emptyProject();
     p.lines[0].audio = { path: "C:\\a.wav", duration: 1, key: "" };
     p.lines[0].pause = 0;
-    const exo = buildExo(layout(p.lines, p.characters), p.video);
-    expect(exo).toContain("[0]\nstart=1\nend=30\nlayer=1");
+    const placed = layout(p.lines, p.characters);
+    const exo = buildExo(placed, buildCues(placed, p.video), p.characters, p.video);
+    // キャラ 2 人なので 音声 5〜6、字幕 7〜8
+    expect(exo).toContain("[0]\nstart=1\nend=30\nlayer=5\noverlay=1\naudio=1");
     expect(exo).toContain("file=C:\\a.wav");
-    expect(exo).toContain("[1]\nstart=1\nend=30\nlayer=2");
-    // 2 行目は音声なしなので字幕だけ、キャラ 2 の字幕レイヤー 4
-    expect(exo).toContain("[2]\nstart=31\n");
-    expect(exo).toMatch(/\[2\]\nstart=31\nend=\d+\nlayer=4/);
+    expect(exo).toContain("[1]\nstart=1\nend=30\nlayer=7");
+    // 2 行目は音声なしなので字幕だけ
+    expect(exo).toMatch(/\[2\]\nstart=31\nend=\d+\nlayer=8/);
+  });
+
+  it("立ち絵を下に置き、口が開いている区間に口開き画像を重ねる", () => {
+    const p = emptyProject();
+    p.characters[0].portrait = { closed: "c.png", open: "o.png", width: 400, height: 800, x: 0.8, scale: 50 };
+    // 30fps で 0.1 秒閉じ → 0.2 秒開き → 0.1 秒閉じ
+    p.lines[0].audio = { path: "a.wav", duration: 0.4, key: "", mouth: "000222222000" };
+    p.lines[0].pause = 0;
+    const placed = layout(p.lines, p.characters);
+    const exo = buildExo(placed, buildCues(placed, p.video), p.characters, p.video);
+    expect(exo).toContain("[0]\nstart=1\nend=61\nlayer=1\noverlay=1\ncamera=0\n[0.0]\n_name=画像ファイル\nfile=c.png");
+    expect(exo).toContain("[1]\nstart=4\nend=9\nlayer=2\noverlay=1\ncamera=0\n[1.0]\n_name=画像ファイル\nfile=o.png");
+    // 中心から右へ 0.3 画面分、下端そろえ（1080/2 - 800*0.5/2）
+    expect(exo).toContain("X=576.0\nY=340.0");
+    expect(mouthSegments(placed, p.characters[0])).toEqual([[0.1, 0.3, 2]]);
+  });
+});
+
+describe("字幕の改行", () => {
+  it("助詞や句読点を前の語にくっつけ、カタカナ語は切らない", () => {
+    expect(phrases("今日はVOICEPEAKの使い方を紹介します。").map((r) => r.join(""))).toEqual([
+      "今日は",
+      "VOICEPEAKの",
+      "使い方を",
+      "紹介します。",
+    ]);
+    expect(phrases("プラグインを入れる").map((r) => r.join(""))[0]).toBe("プラグインを");
+  });
+
+  it("1 行の幅に収め、2 行ごとにページを分ける", () => {
+    const pages = paginate("ありがとうございます、これからもよろしくお願いします！", 14);
+    expect(pages).toEqual([["ありがとうございます、", "これからもよろしく"], ["お願いします！"]]);
+    for (const line of pages.flat()) expect(textWidth(line)).toBeLessThanOrEqual(14);
+  });
+
+  it("手で入れた改行はそのまま使う", () => {
+    expect(paginate("一行目\n二行目", 20)).toEqual([["一行目", "二行目"]]);
+  });
+
+  it("ページが分かれたら文字数に比例して時間を割る", () => {
+    const p = emptyProject();
+    p.video.fontSize = 200; // 1 行 8 文字
+    p.lines = [p.lines[0]];
+    p.lines[0].text = "あいうえおかきく、けこさしすせそた";
+    p.lines[0].audio = { path: "a.wav", duration: 4, key: "" };
+    const cues = buildCues(layout(p.lines, p.characters), p.video);
+    // 読点が行頭に来ないよう、語の切れ目で改行される
+    expect(cues.map((c) => c.text)).toEqual(["あいうえ\nおかきく、", "けこさしすせそた"]);
+    expect(cues[0].end).toBeCloseTo((4 * 9) / 17);
+    expect(cues[1].end).toBe(4);
   });
 });
 
@@ -75,9 +128,10 @@ describe("ass / srt", () => {
   it("行ごとに Dialogue を出す", () => {
     const p = emptyProject();
     const placed = layout(p.lines, p.characters);
-    const ass = buildAss(placed, p.video);
+    const cues = buildCues(placed, p.video);
+    const ass = buildAss(cues, p.video);
     expect(ass.match(/^Dialogue:/gm)?.length).toBe(2);
-    expect(buildSrt(placed)).toContain("1\n00:00:00,000 --> ");
+    expect(buildSrt(cues)).toContain("1\n00:00:00,000 --> ");
   });
 });
 
