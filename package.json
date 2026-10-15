@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:demo": "tsc --noEmit && vite build --mode demo && node scripts/build-demo.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.3",
