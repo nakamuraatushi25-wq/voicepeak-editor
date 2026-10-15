@@ -21,7 +21,9 @@ export const api = {
   listEmotions: (exe: string, narrator: string) =>
     invoke<string[]>("list_emotions", { exe, narrator }),
   synthesize: (req: SynthRequest) =>
-    invoke<{ path: string; duration: number }>("synthesize", { req }),
+    invoke<{ path: string; duration: number; mouth: string }>("synthesize", { req }),
+  analyzeMouth: (path: string) => invoke<string>("analyze_mouth", { path }),
+  imageSize: (path: string) => invoke<[number, number]>("image_size", { path }),
   audioDir: () => invoke<string>("audio_dir"),
   readText: (path: string) => invoke<string>("read_text_file", { path }),
   writeText: (path: string, content: string, encoding?: "shift_jis") =>
@@ -30,6 +32,14 @@ export const api = {
     invoke<void>("export_wav", { clips, total, out }),
   exportMp4: (req: {
     ffmpeg: string;
+    portraits: {
+      closed: string;
+      open: string;
+      half?: string;
+      x: number;
+      scale: number;
+      segments: [number, number, number][];
+    }[];
     clips: Clip[];
     total: number;
     ass: string;
