@@ -1,0 +1,39 @@
+name: release
+
+# v0.2.0 のようなタグを push すると、署名つきインストーラーと
+# アプリ内更新用の latest.json を GitHub Releases に公開する。
+# タグの数字は tauri.conf.json と package.json の version にそろえること。
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm test
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: VOICEPEAK 編集ソフト ${{ github.ref_name }}
+          releaseBody: 下の「…-setup.exe」をダウンロードして実行してください。インストール済みの場合はアプリ内の更新ボタンからも更新できます。
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
