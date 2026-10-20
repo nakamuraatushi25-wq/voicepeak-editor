@@ -1,8 +1,9 @@
 import type { VideoSettings } from "../types";
 import type { Cue } from "./subtitle";
+import type { Span } from "./scene";
 
-/** MP4 書き出し用の ASS 字幕。白文字にキャラ色の縁取りをつける */
-export function buildAss(cues: Cue[], video: VideoSettings): string {
+/** MP4 書き出し用の ASS 字幕。白文字にキャラ色の縁取りをつける。見出しは画面の上に出す */
+export function buildAss(cues: Cue[], video: VideoSettings, titles: Span<string>[] = []): string {
   const styles = new Map<string, string>();
   for (const p of cues) {
     if (styles.has(p.character.id)) continue;
@@ -22,6 +23,7 @@ export function buildAss(cues: Cue[], video: VideoSettings): string {
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     ...styles.values(),
+    `Style: title,${video.font},${Math.round(video.fontSize * 0.8)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,0,8,40,40,${Math.round(video.height * 0.03)},1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -29,6 +31,7 @@ export function buildAss(cues: Cue[], video: VideoSettings): string {
       (p) =>
         `Dialogue: 0,${assTime(p.start)},${assTime(p.end)},${styleName.get(p.character.id)},,0,0,0,,${p.text.replace(/\n/g, "\\N")}`,
     ),
+    ...titles.map((t) => `Dialogue: 1,${assTime(t.start)},${assTime(t.end)},title,,0,0,0,,${t.value.replace(/\n/g, "\\N")}`),
     "",
   ].join("\n");
 }

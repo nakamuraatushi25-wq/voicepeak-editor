@@ -1,10 +1,11 @@
-import type { Character, Line, PlacedLine } from "../types";
+import type { Character, Line, PlacedLine, Reading } from "../types";
+import { displayText, speechText } from "./reading";
 
 /** 音声がまだない行に仮で割り当てる長さ（1 文字あたり秒） */
 const SEC_PER_CHAR = 0.15;
 
 export function estimateDuration(text: string): number {
-  return Math.max(0.5, text.length * SEC_PER_CHAR);
+  return Math.max(0.5, displayText(text).length * SEC_PER_CHAR);
 }
 
 /**
@@ -37,6 +38,7 @@ export function totalDuration(placed: PlacedLine[], minimum = 0): number {
 }
 
 /** 音声を作り直す必要があるか判定するためのキー */
-export function audioKey(line: Line, character: Character): string {
-  return JSON.stringify([character.narrator, line.text, line.emotions, line.speed, line.pitch]);
+export function audioKey(line: Line, character: Character, dictionary?: Reading[]): string {
+  // 読み方の辞書を変えたら、読む文字が変わった行だけ作り直す
+  return JSON.stringify([character.narrator, speechText(line.text, dictionary), line.emotions, line.speed, line.pitch]);
 }

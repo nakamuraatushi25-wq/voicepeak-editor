@@ -1,4 +1,5 @@
 import type { Character, PlacedLine, VideoSettings } from "../types";
+import { displayText } from "./reading";
 
 /** 画面に出す字幕 1 枚分 */
 export interface Cue {
@@ -103,7 +104,7 @@ export function buildCues(placed: PlacedLine[], video: VideoSettings): Cue[] {
   const max = charsPerLine(video);
   const cues: Cue[] = [];
   for (const p of placed) {
-    const pages = paginate(p.line.text, max);
+    const pages = paginate(displayText(p.line.text), max);
     const weights = pages.map((pg) => Math.max(1, textWidth(pg.join(""))));
     const sum = weights.reduce((a, b) => a + b, 0);
     let t = p.start;

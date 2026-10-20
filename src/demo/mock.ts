@@ -106,7 +106,7 @@ const PORTRAIT_W = 400;
 const PORTRAIT_H = 640;
 
 /** 口の形だけ違う 3 枚の SVG 立ち絵 */
-function portraitSvg(hair: string, outfit: string, mouth: 0 | 1 | 2, long: boolean) {
+function portraitSvg(hair: string, outfit: string, mouth: 0 | 1 | 2, long: boolean, smile = false) {
   const m =
     mouth === 0
       ? `<path d="M186 262 q14 8 28 0" stroke="#7a3b3b" stroke-width="4" fill="none" stroke-linecap="round"/>`
@@ -121,8 +121,12 @@ ${back}
 <ellipse cx="200" cy="220" rx="100" ry="115" fill="#fbe2d2"/>
 <path d="M96 210 q0-130 104-130 q104 0 104 130 q-30-70-104-70 q-60 0-104 70z" fill="${hair}"/>
 <path d="M120 150 q40 40 80 10 q40 30 90 -10 q-20-60-90-60 q-70 0-80 60z" fill="${hair}"/>
-<ellipse cx="160" cy="220" rx="13" ry="20" fill="#2b2b3a"/><ellipse cx="240" cy="220" rx="13" ry="20" fill="#2b2b3a"/>
-<circle cx="165" cy="212" r="5" fill="#fff"/><circle cx="245" cy="212" r="5" fill="#fff"/>
+${
+    smile
+      ? `<path d="M146 224 q14 -18 28 0 M226 224 q14 -18 28 0" stroke="#2b2b3a" stroke-width="6" fill="none" stroke-linecap="round"/>`
+      : `<ellipse cx="160" cy="220" rx="13" ry="20" fill="#2b2b3a"/><ellipse cx="240" cy="220" rx="13" ry="20" fill="#2b2b3a"/>
+<circle cx="165" cy="212" r="5" fill="#fff"/><circle cx="245" cy="212" r="5" fill="#fff"/>`
+  }
 <ellipse cx="140" cy="250" rx="14" ry="7" fill="#f7b5b5" opacity=".6"/><ellipse cx="260" cy="250" rx="14" ry="7" fill="#f7b5b5" opacity=".6"/>
 ${m}
 </svg>`;
@@ -131,6 +135,13 @@ ${m}
 
 function samplePortrait(hair: string, outfit: string, long: boolean, x: number) {
   return {
+    expressions: {
+      笑顔: {
+        closed: portraitSvg(hair, outfit, 0, long, true),
+        half: portraitSvg(hair, outfit, 1, long, true),
+        open: portraitSvg(hair, outfit, 2, long, true),
+      },
+    },
     closed: portraitSvg(hair, outfit, 0, long),
     half: portraitSvg(hair, outfit, 1, long),
     open: portraitSvg(hair, outfit, 2, long),
@@ -141,21 +152,55 @@ function samplePortrait(hair: string, outfit: string, long: boolean, x: number) 
   };
 }
 
-/** 体験版の最初に開いておくプロジェクト */
+/** 表を 1 枚のスライド画像にする（見本用） */
+function tableSlide(title: string, rows: string[][]) {
+  const W = 1280;
+  const H = 120 + rows.length * 72;
+  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const cols = rows[0].length;
+  const cw = (W - 80) / cols;
+  const cells = rows
+    .map((r, i) =>
+      r
+        .map(
+          (c, k) =>
+            `<rect x="${40 + k * cw}" y="${100 + i * 72}" width="${cw}" height="72" fill="${i === 0 ? "#dfe7f3" : "#fff"}" stroke="#9aa7bb"/>` +
+            `<text x="${40 + k * cw + cw / 2}" y="${146 + i * 72}" font-size="30" text-anchor="middle" fill="#1e2633" font-weight="${i === 0 ? 700 : 400}">${esc(c)}</text>`,
+        )
+        .join(""),
+    )
+    .join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+<rect width="${W}" height="${H}" rx="24" fill="#f6f8fb"/>
+<text x="40" y="66" font-size="38" font-weight="700" fill="#1e2633">${esc(title)}</text>${cells}</svg>`;
+  return { path: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, width: W, height: H, scale: 90 };
+}
+
+/** 体験版の最初に開いておくプロジェクト。解説動画の作り方の見本 */
 export function demoProject(): Project {
   const p = emptyProject();
   const [a, b]: Character[] = p.characters;
   a.name = "あおい";
-  a.portrait = samplePortrait("#4a6fa5", "#e8eef7", true, 0.78);
+  a.portrait = samplePortrait("#4a6fa5", "#e8eef7", true, 0.82);
   b.name = "そら";
-  b.portrait = samplePortrait("#6b4a3a", "#3f5f4a", false, 0.22);
+  b.portrait = samplePortrait("#6b4a3a", "#3f5f4a", false, 0.18);
+  const line = (c: Character, text: string, extra: Partial<Project["lines"][number]> = {}) => ({ ...newLine(c, text), ...extra });
   p.lines = [
-    newLine(a, "こんにちは、あおいです。今日はこの編集ソフトでできることを紹介します。"),
-    newLine(b, "セリフを打ち込んで生成を押すだけで、声がつくんですよね。"),
-    newLine(a, "はい。字幕は画面の幅に合わせて自動で改行されるので、長いセリフでもはみ出しません。"),
-    newLine(b, "立ち絵も音声に合わせて口パクします。"),
-    newLine(a, "できあがったらAviUtlのexoや動画に書き出せます。"),
+    line(a, "こんにちは、あおいです。今日は芥川龍之介の文章を数字で調べた研究を紹介します。", { title: "はじめに", expression: "笑顔" }),
+    line(b, "{鴎外|おうがい}や漱石と比べて、芥川らしさがどこにあるのか、という話ですね。"),
+    line(a, "まず、芥川を他の作家から分ける文体の次元を見てみましょう。", {
+      title: "結果1 文体の次元",
+      slide: tableSlide("芥川を分ける次元", [
+        ["次元", "効果量 d", "芥川の作品"],
+        ["論評的 ↔ 継起的", "+2.93", "11作品中10"],
+        ["文と文の受け渡し", "+0.4〜+1.2", "多い"],
+      ]),
+    }),
+    line(b, "効果量が2.93というのは、かなり大きな差なんですか？"),
+    line(a, "はい。ほぼこの一つの次元で、芥川と他の作家を見分けられます。", { expression: "笑顔" }),
+    line(b, "画像や見出しは、セリフごとに切り替えられるんですね。", { title: "まとめ", slide: null }),
   ];
+  p.dictionary = [{ word: "芥川龍之介", reading: "あくたがわりゅうのすけ" }];
   return p;
 }
 
@@ -169,6 +214,7 @@ function pickFile(filters?: { extensions: string[] }[]): Promise<string | null> 
     const exts = (filters ?? []).flatMap((f) => f.extensions).filter((e) => e !== "*");
     if (exts.some((e) => ["png", "jpg", "jpeg", "webp"].includes(e))) input.accept = "image/*";
     else if (exts.includes("mp4")) input.accept = "video/*";
+    else if (exts.includes("mp3")) input.accept = "audio/*";
     else if (exts.length) input.accept = exts.map((e) => `.${e.split(".").pop()}`).join(",");
     input.onchange = () => {
       const f = input.files?.[0];

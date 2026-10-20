@@ -1,5 +1,8 @@
-import type { Character, Line } from "../types";
+import { Fragment } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import type { Character, Line, Reading } from "../types";
 import { audioKey } from "../lib/timeline";
+import { fileName } from "../lib/media";
 import { EmotionSliders } from "./EmotionSliders";
 
 interface Props {
@@ -10,6 +13,9 @@ interface Props {
   /** 再生位置（「今の位置から話す」用） */
   currentTime: number;
   emotionsOf: (narrator: string) => string[];
+  dictionary?: Reading[];
+  /** 画像（スライド）を選ぶ */
+  onPickImage: () => Promise<{ path: string; width: number; height: number } | null>;
   onSelect: (id: string) => void;
   onChange: (line: Line) => void;
   onAdd: (afterId: string | null) => void;
@@ -32,11 +38,22 @@ export function ScriptEditor(props: Props) {
       <ol>
         {lines.map((line) => {
           const c = byId.get(line.characterId) ?? characters[0];
-          const fresh = line.audio && line.audio.key === audioKey(line, c);
+          const fresh = line.audio && line.audio.key === audioKey(line, c, props.dictionary);
           const selected = line.id === selectedId;
+          const expressions = Object.keys(c.portrait?.expressions ?? {});
+          const pickSlide = async () => {
+            const img = await props.onPickImage();
+            if (img) props.onChange({ ...line, slide: { ...img, scale: line.slide?.scale ?? 90 } });
+          };
+          const marks = [
+            line.slide ? `🖼 ${fileName(line.slide.path)}` : line.slide === null ? "🖼 画像を消す" : "",
+            line.title === "" ? "見出しを消す" : "",
+            line.expression ? `😀 ${line.expression}` : "",
+          ].filter(Boolean);
           return (
+            <Fragment key={line.id}>
+            {line.title && <li className="chapter-head">▍{line.title}</li>}
             <li
-              key={line.id}
               className={selected ? "line selected" : "line"}
               style={{ borderLeftColor: c.color }}
               onClick={() => props.onSelect(line.id)}
@@ -72,8 +89,66 @@ export function ScriptEditor(props: Props) {
                   ▶
                 </button>
               </div>
+              {marks.length > 0 && !selected && <div className="marks">{marks.map((m) => <span key={m}>{m}</span>)}</div>}
               {selected && (
                 <div className="details">
+                  <div className="scene-row">
+                    <span>見出し（章）</span>
+                    <select
+                      value={line.title === undefined ? "keep" : line.title === "" ? "clear" : "set"}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        props.onChange({ ...line, title: v === "keep" ? undefined : v === "clear" ? "" : line.title || "新しい章" });
+                      }}
+                    >
+                      <option value="keep">前のまま</option>
+                      <option value="set">この行から変える</option>
+                      <option value="clear">この行で消す</option>
+                    </select>
+                    {line.title && <input type="text" value={line.title} onChange={(e) => props.onChange({ ...line, title: e.target.value || "新しい章" })} />}
+                  </div>
+                  <div className="scene-row">
+                    <span>画像</span>
+                    <select
+                      value={line.slide === undefined ? "keep" : line.slide === null ? "clear" : "set"}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (v === "set") pickSlide();
+                        else props.onChange({ ...line, slide: v === "keep" ? undefined : null });
+                      }}
+                    >
+                      <option value="keep">前のまま</option>
+                      <option value="set">この行から出す</option>
+                      <option value="clear">この行で消す</option>
+                    </select>
+                    {line.slide && (
+                      <>
+                        <img src={convertFileSrc(line.slide.path)} alt="" />
+                        <button onClick={pickSlide}>別の画像</button>
+                        <label>
+                          大きさ {line.slide.scale}%
+                          <input
+                            type="range"
+                            min={20}
+                            max={100}
+                            value={line.slide.scale}
+                            onChange={(e) => props.onChange({ ...line, slide: { ...line.slide!, scale: +e.target.value } })}
+                          />
+                        </label>
+                      </>
+                    )}
+                  </div>
+                  {expressions.length > 0 && (
+                    <div className="scene-row">
+                      <span>表情</span>
+                      <select value={line.expression ?? ""} onChange={(e) => props.onChange({ ...line, expression: e.target.value || undefined })}>
+                        <option value="">いつもの絵</option>
+                        {expressions.map((n) => (
+                          <option key={n}>{n}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                   <label>
                     速さ {line.speed}
                     <input type="range" min={50} max={200} value={line.speed} onChange={(e) => props.onChange({ ...line, speed: +e.target.value })} />
@@ -124,6 +199,7 @@ export function ScriptEditor(props: Props) {
                 </div>
               )}
             </li>
+            </Fragment>
           );
         })}
       </ol>

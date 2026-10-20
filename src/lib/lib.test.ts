@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { splitText } from "./split";
 import { audioKey, layout, totalDuration } from "./timeline";
-import { buildExo, encodeExoText } from "./exo";
+import { bgmSegments, buildExo, encodeExoText } from "./exo";
+import { buildModel, chapters, cropModel, portraitFrames } from "./scene";
+import { displayText, speechText } from "./reading";
 import { assColor, assTime, buildAss, buildSrt } from "./ass";
 import { buildCues, paginate, phrases, textWidth } from "./subtitle";
-import { mouthSegments } from "./mouth";
 import { emptyProject, importScript, newCharacter, newLine } from "./project";
 import { compareVersions, pickUpdate } from "./update";
 
@@ -79,52 +80,188 @@ describe("exo", () => {
     expect(hex.length).toBe(4096);
   });
 
-  it("音声と字幕をキャラごとのレイヤーに置く", () => {
+  it("声と字幕をキャラごとのレイヤーに置き、使わないレイヤーは詰める", () => {
     const p = emptyProject();
     p.lines[0].audio = { path: "C:\\a.wav", duration: 1, key: "" };
     p.lines[0].pause = 0;
-    const placed = layout(p.lines, p.characters);
-    const exo = buildExo(placed, buildCues(placed, p.video), p.characters, p.video);
-    // キャラ 2 人なので 音声 5〜6、字幕 7〜8
-    expect(exo).toContain("[0]\nstart=1\nend=30\nlayer=5\noverlay=1\naudio=1");
+    const exo = buildExo(buildModel(p), p.characters, p.video);
+    // 声は 1 人目だけなのでレイヤー 1、字幕は 2 人ぶん 2〜3
+    expect(exo).toContain("[0]\nstart=1\nend=30\nlayer=1\noverlay=1\naudio=1");
     expect(exo).toContain("file=C:\\a.wav");
-    expect(exo).toContain("[1]\nstart=1\nend=30\nlayer=7");
+    expect(exo).toContain("[1]\nstart=1\nend=30\nlayer=2");
     // 2 行目は音声なしなので字幕だけ
-    expect(exo).toMatch(/\[2\]\nstart=31\nend=\d+\nlayer=8/);
+    expect(exo).toMatch(/\[2\]\nstart=31\nend=\d+\nlayer=3/);
   });
 
-  it("立ち絵を下に置き、口が開いている区間に口開き画像を重ねる", () => {
+  it("立ち絵は口の形ごとのコマを 1 つのレイヤーにすき間なく並べる", () => {
     const p = emptyProject();
     p.characters[0].portrait = { closed: "c.png", open: "o.png", width: 400, height: 800, x: 0.8, scale: 50 };
     // 30fps で 0.1 秒閉じ → 0.2 秒開き → 0.1 秒閉じ
     p.lines[0].audio = { path: "a.wav", duration: 0.4, key: "", mouth: "000222222000" };
     p.lines[0].pause = 0;
-    const placed = layout(p.lines, p.characters);
-    const exo = buildExo(placed, buildCues(placed, p.video), p.characters, p.video);
-    expect(exo).toContain("[0]\nstart=1\nend=61\nlayer=1\noverlay=1\ncamera=0\n[0.0]\n_name=画像ファイル\nfile=c.png");
-    expect(exo).toContain("[1]\nstart=4\nend=9\nlayer=2\noverlay=1\ncamera=0\n[1.0]\n_name=画像ファイル\nfile=o.png");
+    const exo = buildExo(buildModel(p), p.characters, p.video);
+    expect(exo).toContain("[0]\nstart=1\nend=3\nlayer=1\noverlay=1\ncamera=0\n[0.0]\n_name=画像ファイル\nfile=c.png");
+    expect(exo).toContain("[1]\nstart=4\nend=9\nlayer=1\noverlay=1\ncamera=0\n[1.0]\n_name=画像ファイル\nfile=o.png");
+    expect(exo).toContain("[2]\nstart=10\nend=61\nlayer=1\noverlay=1\ncamera=0\n[2.0]\n_name=画像ファイル\nfile=c.png");
     // 中心から右へ 0.3 画面分、下端そろえ（1080/2 - 800*0.5/2）
     expect(exo).toContain("X=576.0\nY=340.0");
-    expect(mouthSegments(placed, p.characters[0])).toEqual([[0.1, 0.3, 2]]);
   });
-});
 
-describe("exo（背景動画あり）", () => {
-  it("1 に動画、2 にその音声を置き、ほかのレイヤーを 2 つ上げる", () => {
+  it("背景動画は一番下に置き、ほかのレイヤーはその上に積む", () => {
     const p = emptyProject();
+    p.lines = p.lines.slice(0, 1);
     p.lines[0].audio = { path: "C:\\a.wav", duration: 1, key: "" };
-    const placed = layout(p.lines.slice(0, 1), p.characters);
     const movie = { path: "C:\\m.mp4", duration: 10, width: 1280, height: 720, volume: 40 };
-    const exo = buildExo(placed, buildCues(placed, p.video), p.characters, p.video, movie);
+    const exo = buildExo(buildModel({ ...p, movie }), p.characters, p.video, movie);
     expect(exo).toContain("length=300");
-    expect(exo).toContain("[0]\nstart=1\nend=300\nlayer=1\noverlay=1\ncamera=0\n[0.0]\n_name=動画ファイル");
+    expect(exo).toContain("[0]\nstart=1\nend=300\nlayer=1\noverlay=1\ncamera=0\n[0.0]\n_name=動画ファイル\n再生位置=1");
     // 1280x720 を 1920x1080 に合わせて 150%
     expect(exo).toContain("拡大率=150.00");
     expect(exo).toContain("[1]\nstart=1\nend=300\nlayer=2\noverlay=1\naudio=1");
     expect(exo).toContain("動画ファイルと連携=1\nfile=C:\\m.mp4");
     expect(exo).toContain("音量=40.0");
-    // 1 人目の声は 5 → 7
-    expect(exo).toContain("[2]\nstart=1\nend=30\nlayer=7\noverlay=1\naudio=1");
+    expect(exo).toContain("[2]\nstart=1\nend=30\nlayer=3\noverlay=1\naudio=1");
+  });
+
+  it("画像・見出し・BGM を置く", () => {
+    const p = emptyProject();
+    const [a] = p.characters;
+    p.lines = [newLine(a, "一"), newLine(a, "二"), newLine(a, "三")];
+    p.lines.forEach((l) => {
+      l.audio = { path: "x.wav", duration: 1, key: "" };
+      l.pause = 0;
+    });
+    p.lines[0].title = "はじめに";
+    p.lines[1].slide = { path: "表1.png", width: 960, height: 540, scale: 100 };
+    p.lines[2].slide = null;
+    const bgm = { path: "bgm.mp3", duration: 100, volume: 50, duck: 20 };
+    const exo = buildExo(buildModel(p), p.characters, p.video, undefined, bgm);
+    // 画像は 1〜2 秒。字幕の上（高さ 85%）に収まる大きさ 170%、中心は上に寄せる
+    expect(exo).toContain("start=31\nend=60\nlayer=1\noverlay=1\ncamera=0\n[0.0]\n_name=画像ファイル\nfile=表1.png");
+    expect(exo).toContain("Y=-81.0\nZ=0.0\n拡大率=170.00");
+    // 見出しは字幕のあと、BGM は一番上。話している間だけ音量 10
+    expect(exo).toMatch(/layer=4\noverlay=1\ncamera=0\n\[\d+\.0\]\n_name=テキスト\nサイズ=51/);
+    expect(exo).toMatch(/start=1\nend=90\nlayer=5\noverlay=1\naudio=1\n\[\d+\.0\]\n_name=音声ファイル\n再生位置=0.00\n再生速度=100.0\nループ再生=1/);
+    expect(exo).toContain("音量=10.0");
+  });
+});
+
+describe("場面の組み立て", () => {
+  const project = () => {
+    const p = emptyProject();
+    const [a, b] = p.characters;
+    p.lines = [newLine(a, "一"), newLine(b, "二"), newLine(a, "三"), newLine(b, "四")];
+    p.lines.forEach((l) => {
+      l.audio = { path: "x.wav", duration: 1, key: "", mouth: "000222" };
+      l.pause = 0;
+    });
+    return p;
+  };
+
+  it("画像と見出しは指定した行から次の指定まで続く", () => {
+    const p = project();
+    p.lines[1].title = "1 はじめに";
+    p.lines[1].slide = { path: "a.png", width: 10, height: 10, scale: 100 };
+    p.lines[3].title = "2 結果";
+    p.lines[3].slide = null;
+    const m = buildModel(p);
+    expect(m.titles.map((t) => [t.start, t.end, t.value])).toEqual([
+      [1, 3, "1 はじめに"],
+      [3, 4, "2 結果"],
+    ]);
+    expect(m.slides.map((t) => [t.start, t.end])).toEqual([[1, 3]]);
+    expect(chapters(m).map((c) => [c.title, c.start, c.end])).toEqual([
+      ["はじめ", 0, 1],
+      ["1 はじめに", 1, 3],
+      ["2 結果", 3, 4],
+    ]);
+  });
+
+  it("章だけ切り出すと 0 秒から始まり、範囲外のものは入らない", () => {
+    const p = project();
+    p.lines[1].title = "前半";
+    p.lines[3].title = "後半";
+    const m = buildModel(p);
+    const c = cropModel(m, 1, 3);
+    expect(c.offset).toBe(1);
+    expect(c.total).toBe(2);
+    expect(c.placed.map((x) => [x.line.text, x.start, x.end])).toEqual([
+      ["二", 0, 1],
+      ["三", 1, 2],
+    ]);
+    expect(c.titles.map((t) => [t.start, t.end, t.value])).toEqual([[0, 2, "前半"]]);
+    expect(c.speech).toEqual([[0, 2]]);
+  });
+
+  it("表情はそのセリフから次のセリフまで続き、口パクもその表情の絵を使う", () => {
+    const p = project();
+    const a = p.characters[0];
+    a.portrait = {
+      closed: "c.png",
+      open: "o.png",
+      width: 1,
+      height: 1,
+      x: 0.5,
+      scale: 100,
+      expressions: { 笑顔: { closed: "sc.png", open: "so.png" } },
+    };
+    p.lines[2].expression = "笑顔";
+    const frames = portraitFrames(layout(p.lines, p.characters), a, 4);
+    expect(frames.map((f) => [f.start, f.end, f.value])).toEqual([
+      [0, 0.1, "c.png"],
+      [0.1, 0.2, "o.png"],
+      [0.2, 2, "c.png"],
+      [2, 2.1, "sc.png"],
+      [2.1, 2.2, "so.png"],
+      [2.2, 4, "sc.png"],
+    ]);
+  });
+
+  it("BGM の区切り：話している区間とそうでない区間に分ける", () => {
+    expect(bgmSegments([[1, 2], [3, 4]], 5)).toEqual([
+      [0, 1, false],
+      [1, 2, true],
+      [2, 3, false],
+      [3, 4, true],
+      [4, 5, false],
+    ]);
+  });
+
+  it("見出しは ASS の上寄せのスタイルで出す", () => {
+    const p = project();
+    p.lines[0].title = "要旨";
+    const m = buildModel(p);
+    const ass = buildAss(m.cues, p.video, m.titles);
+    expect(ass).toContain("Style: title,メイリオ,51,");
+    expect(ass).toContain("Dialogue: 1,0:00:00.00,0:00:04.00,title,,0,0,0,,要旨");
+  });
+});
+
+describe("読み方", () => {
+  it("字幕は表記のまま、声は読み方で読む", () => {
+    const dict = [
+      { word: "鴎外", reading: "おうがい" },
+      { word: "森鴎外", reading: "もりおうがい" },
+    ];
+    const text = "森鴎外と鴎外、{漱石|そうせき}と{鴎外|かもめそと}";
+    expect(displayText(text)).toBe("森鴎外と鴎外、漱石と鴎外");
+    expect(speechText(text, dict)).toBe("もりおうがいとおうがい、そうせきとかもめそと");
+  });
+
+  it("辞書を変えると、読みが変わる行だけ作り直しになる", () => {
+    const p = emptyProject();
+    const [a] = p.characters;
+    const hit = newLine(a, "鴎外の作品");
+    const miss = newLine(a, "漱石の作品");
+    const dict = [{ word: "鴎外", reading: "おうがい" }];
+    expect(audioKey(hit, a, dict)).not.toBe(audioKey(hit, a));
+    expect(audioKey(miss, a, dict)).toBe(audioKey(miss, a));
+  });
+
+  it("字幕には読み方の指定を出さない", () => {
+    const p = emptyProject();
+    p.lines = [newLine(p.characters[0], "{鴎外|おうがい}です")];
+    expect(buildModel(p).cues[0].text).toBe("鴎外です");
   });
 });
 

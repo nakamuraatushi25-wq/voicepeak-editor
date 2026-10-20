@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { Character, Line, Project, Settings } from "./types";
+import type { Character, Line, Project, Reading, Settings } from "./types";
 import { api } from "./lib/api";
 import { splitText } from "./lib/split";
-import { audioKey, layout, totalDuration } from "./lib/timeline";
+import { audioKey } from "./lib/timeline";
 import { buildExo } from "./lib/exo";
 import { buildAss, buildSrt } from "./lib/ass";
-import { buildCues } from "./lib/subtitle";
-import { mouthSegments } from "./lib/mouth";
-import { fileName, videoInfo } from "./lib/media";
+import { buildModel, chapters, cropModel, slideBox, type Model } from "./lib/scene";
+import { speechText } from "./lib/reading";
+import { audioInfo, fileName, videoInfo } from "./lib/media";
 import { emptyProject, importScript, newCharacter, newLine, parseProject } from "./lib/project";
 import { playOnce, usePlayer } from "./lib/player";
 import { CharacterPanel } from "./components/CharacterPanel";
@@ -28,21 +28,15 @@ function loadSettings(): Settings {
   }
 }
 
-/** 体験版の立ち絵は埋め込み画像なので、exo では読みやすいファイル名に置き換える */
-const demoNames = (cs: Character[]) =>
-  cs.map((c) =>
-    c.portrait
-      ? {
-          ...c,
-          portrait: {
-            ...c.portrait,
-            closed: `C:\\立ち絵\\${c.name}_口閉じ.png`,
-            half: c.portrait.half && `C:\\立ち絵\\${c.name}_半開き.png`,
-            open: `C:\\立ち絵\\${c.name}_口開き.png`,
-          },
-        }
-      : c,
-  );
+/** 体験版の素材は埋め込みデータなので、exo では読みやすいファイル名に置き換える */
+function friendlyPaths(exo: string): string {
+  const names = new Map<string, string>();
+  return exo.replace(/^file=(data:|blob:)(.*)$/gm, (_, kind: string, rest: string) => {
+    if (kind === "blob:" && rest.includes("#")) return `file=C:\\素材\\${decodeURIComponent(rest.split("#").pop()!)}`;
+    if (!names.has(rest)) names.set(rest, `見本の画像${names.size + 1}.png`);
+    return `file=C:\\素材\\${names.get(rest)}`;
+  });
+}
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -55,14 +49,16 @@ export default function App({ initialProject, demo = false }: { initialProject?:
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
-  const [dialog, setDialog] = useState<"settings" | "import" | null>(null);
+  const [dialog, setDialog] = useState<"settings" | "import" | "dictionary" | null>(null);
+  /** 書き出す範囲。-1 は全体、0 以上は章の番号 */
+  const [range, setRange] = useState(-1);
   /** 体験版で書き出しの代わりに中身を見せる */
   const [output, setOutput] = useState<{ title: string; text: string } | null>(null);
   const [pxPerSec, setPxPerSec] = useState(60);
 
-  const placed = useMemo(() => layout(project.lines, project.characters), [project]);
-  const cues = useMemo(() => buildCues(placed, project.video), [placed, project.video]);
-  const total = totalDuration(placed, project.movie?.duration);
+  const model = useMemo(() => buildModel(project), [project]);
+  const { placed, total } = model;
+  const chapterList = useMemo(() => chapters(model), [model]);
   const player = usePlayer(placed, total);
 
   // 設定の保存と VOICEPEAK の自動検出
@@ -109,12 +105,12 @@ export default function App({ initialProject, demo = false }: { initialProject?:
     const c = project.characters.find((x) => x.id === line.characterId);
     if (!c) throw new Error("キャラが見つかりません");
     if (!settings.voicepeakPath) throw new Error("先に設定で VOICEPEAK の場所を指定してください");
-    const key = audioKey(line, c);
+    const key = audioKey(line, c, project.dictionary);
     const dir = await api.audioDir();
     const sep = dir.includes("\\") ? "\\" : "/";
     const res = await api.synthesize({
       exe: settings.voicepeakPath,
-      chunks: splitText(line.text),
+      chunks: splitText(speechText(line.text, project.dictionary)),
       narrator: c.narrator,
       emotions: Object.entries(line.emotions),
       speed: line.speed,
@@ -140,7 +136,7 @@ export default function App({ initialProject, demo = false }: { initialProject?:
     const byId = new Map(project.characters.map((c) => [c.id, c]));
     const targets = project.lines.filter((l) => {
       const c = byId.get(l.characterId);
-      return c && l.text.trim() && l.audio?.key !== audioKey(l, c);
+      return c && l.text.trim() && l.audio?.key !== audioKey(l, c, project.dictionary);
     });
     let done = 0;
     for (const line of targets) {
@@ -189,65 +185,76 @@ export default function App({ initialProject, demo = false }: { initialProject?:
     }
   };
 
-  const withAudio = () => placed.filter((p) => p.line.audio);
+  const missingAudio = () => placed.some((p) => !p.line.audio);
 
-  /** 口パクデータのない古い音声を解析して、配置済みの行に反映する */
-  const ensureMouth = async () => {
-    const missing = withAudio().filter((p) => !p.line.audio!.mouth);
-    if (missing.length === 0) return placed;
+  /** 口パクデータのない古い音声を解析して反映し、書き出しに使う全体の組み立てを返す */
+  const readyModel = async (): Promise<Model> => {
+    const missing = placed.filter((p) => p.line.audio && !p.line.audio.mouth);
+    if (missing.length === 0 || !project.characters.some((c) => c.portrait)) return model;
     const mouths = new Map<string, string>();
     for (const p of missing) mouths.set(p.line.id, await api.analyzeMouth(p.line.audio!.path));
-    updateLines((ls) =>
-      ls.map((l) => (mouths.has(l.id) && l.audio ? { ...l, audio: { ...l.audio, mouth: mouths.get(l.id) } } : l)),
-    );
-    return placed.map((p) =>
-      mouths.has(p.line.id) ? { ...p, line: { ...p.line, audio: { ...p.line.audio!, mouth: mouths.get(p.line.id) } } } : p,
-    );
+    const patch = (ls: Line[]) =>
+      ls.map((l) => (mouths.has(l.id) && l.audio ? { ...l, audio: { ...l.audio, mouth: mouths.get(l.id) } } : l));
+    updateLines(patch);
+    return buildModel({ ...project, lines: patch(project.lines) });
   };
-  const clips = () => withAudio().map((p) => ({ path: p.line.audio!.path, start: p.start }));
+
+  /** 選んだ範囲（全体か章）だけにする */
+  const inRange = (m: Model): Model => {
+    const ch = range >= 0 ? chapters(m)[range] : undefined;
+    return ch ? cropModel(m, ch.start, ch.end) : m;
+  };
+  const rangeName = range >= 0 && chapterList[range] ? `_${range + 1}` : "";
 
   const exportAs = async (kind: "exo" | "wav" | "srt" | "mp4") => {
     if (demo) return previewExport(kind);
-    const out = await save({ filters: [{ name: kind.toUpperCase(), extensions: [kind] }], defaultPath: `output.${kind}` });
+    const out = await save({ filters: [{ name: kind.toUpperCase(), extensions: [kind] }], defaultPath: `output${rangeName}.${kind}` });
     if (!out) return;
     try {
-      if (kind !== "srt" && withAudio().length < placed.length) {
+      if (kind !== "srt" && missingAudio()) {
         setMessage("未生成の行があります。先に「すべて生成」をしてください");
         return;
       }
       setMessage("書き出し中…");
-      const hasPortraits = project.characters.some((c) => c.portrait);
-      const ready = kind !== "srt" && hasPortraits ? await ensureMouth() : placed;
-      if (kind === "exo")
-        await api.writeText(out, buildExo(ready, cues, project.characters, project.video, project.movie), "shift_jis");
-      if (kind === "srt") await api.writeText(out, buildSrt(cues));
-      if (kind === "wav") await api.exportWav(clips(), total, out);
+      const m = inRange(kind === "srt" ? model : await readyModel());
+      const v = project.video;
+      const clips = m.placed.flatMap((p) => (p.line.audio ? [{ path: p.line.audio.path, start: p.start }] : []));
+      if (kind === "exo") await api.writeText(out, buildExo(m, project.characters, v, project.movie, project.bgm), "shift_jis");
+      if (kind === "srt") await api.writeText(out, buildSrt(m.cues));
+      if (kind === "wav") await api.exportWav(clips, m.total, out);
       if (kind === "mp4") {
-        const v = project.video;
         await api.exportMp4({
           ffmpeg: settings.ffmpegPath || "ffmpeg",
           portraits: project.characters.flatMap((c) =>
-            c.portrait
+            c.portrait && m.frames.get(c.id)?.length
               ? [
                   {
-                    closed: c.portrait.closed,
-                    open: c.portrait.open,
-                    half: c.portrait.half,
+                    frames: m.frames.get(c.id)!.map((f) => [f.start, f.end, f.value] as [number, number, string]),
                     x: c.portrait.x,
                     scale: c.portrait.scale,
-                    segments: mouthSegments(ready, c),
                   },
                 ]
               : [],
           ),
-          clips: clips(),
-          total,
-          ass: buildAss(cues, v),
+          slides: m.slides.map((s) => {
+            const b = slideBox(s.value, v.width, v.height);
+            return { path: s.value.path, start: s.start, end: s.end, left: b.left, top: b.top, width: b.w, height: b.h };
+          }),
+          clips,
+          total: m.total,
+          ass: buildAss(m.cues, v, m.titles),
           width: v.width,
           height: v.height,
           fps: v.fps,
           background: v.background,
-          movie: project.movie && { path: project.movie.path, volume: project.movie.volume },
+          movie: project.movie && { path: project.movie.path, volume: project.movie.volume, offset: m.offset },
+          bgm: project.bgm && {
+            path: project.bgm.path,
+            volume: project.bgm.volume,
+            duck: project.bgm.duck,
+            speech: m.speech,
+            offset: project.bgm.duration > 0 ? m.offset % project.bgm.duration : 0,
+          },
           out,
         });
       }
@@ -263,20 +270,15 @@ export default function App({ initialProject, demo = false }: { initialProject?:
       setMessage(`${kind === "wav" ? "音声" : "動画"}の書き出しはパソコン版だけです。exo と字幕は中身を見られます`);
       return;
     }
-    if (kind === "exo" && withAudio().length < placed.length) {
+    if (kind === "exo" && missingAudio()) {
       setMessage("未生成の行があります。先に「すべて生成」をしてください");
       return;
     }
+    const m = inRange(model);
     setOutput(
       kind === "exo"
-        ? { title: "AviUtl（.exo）の中身", text: buildExo(
-                placed,
-                cues,
-                demoNames(project.characters),
-                project.video,
-                project.movie && { ...project.movie, path: "C:\\動画\\背景.mp4" },
-              ) }
-        : { title: "字幕（.srt）の中身", text: buildSrt(cues) },
+        ? { title: "AviUtl（.exo）の中身", text: friendlyPaths(buildExo(m, project.characters, project.video, project.movie, project.bgm)) }
+        : { title: "字幕（.srt）の中身", text: buildSrt(m.cues) },
     );
   };
 
@@ -310,6 +312,19 @@ export default function App({ initialProject, demo = false }: { initialProject?:
     }
   };
   const setMovie = (movie: Project["movie"]) => setProject((p) => ({ ...p, movie }));
+
+  /** BGM を選ぶ。最初はやや小さめ、セリフの間はさらに小さく */
+  const pickBgm = async () => {
+    const path = await open({ filters: [{ name: "音声", extensions: ["mp3", "wav", "ogg", "m4a"] }] });
+    if (typeof path !== "string") return;
+    try {
+      const { duration } = await audioInfo(path);
+      setProject((p) => ({ ...p, bgm: { path, duration, volume: p.bgm?.volume ?? 40, duck: p.bgm?.duck ?? 30 } }));
+    } catch (e) {
+      setMessage(errorText(e));
+    }
+  };
+  const setBgm = (bgm: Project["bgm"]) => setProject((p) => ({ ...p, bgm }));
 
   // ---- 行の操作 ----
   const addLine = (afterId: string | null) => {
@@ -348,6 +363,16 @@ export default function App({ initialProject, demo = false }: { initialProject?:
         <button onClick={player.playing ? player.stop : player.play}>{player.playing ? "■ 停止" : "▶ 再生"}</button>
         <span className="time">{player.time.toFixed(1)} / {total.toFixed(1)} 秒</span>
         <span className="sep" />
+        {chapterList.length > 0 && (
+          <select value={range < chapterList.length ? range : -1} onChange={(e) => setRange(+e.target.value)} title="書き出す範囲">
+            <option value={-1}>範囲：全体</option>
+            {chapterList.map((c, i) => (
+              <option key={i} value={i}>
+                {i + 1}. {c.title}（{c.start.toFixed(0)}〜{c.end.toFixed(0)} 秒）
+              </option>
+            ))}
+          </select>
+        )}
         <select value="" onChange={(e) => e.target.value && exportAs(e.target.value as "exo")}>
           <option value="">書き出し…</option>
           <option value="exo">AviUtl（.exo）</option>
@@ -355,6 +380,7 @@ export default function App({ initialProject, demo = false }: { initialProject?:
           <option value="wav">音声（.wav）</option>
           <option value="srt">字幕（.srt）</option>
         </select>
+        <button onClick={() => setDialog("dictionary")}>読み方</button>
         <button onClick={() => setDialog("settings")}>設定</button>
         {!demo && <UpdateBanner />}
         {demo && (
@@ -387,6 +413,8 @@ export default function App({ initialProject, demo = false }: { initialProject?:
           busyId={busyId}
           currentTime={player.time}
           emotionsOf={emotionsOf}
+          dictionary={project.dictionary}
+          onPickImage={pickImage}
           onSelect={setSelectedId}
           onChange={updateLine}
           onAdd={addLine}
@@ -397,13 +425,13 @@ export default function App({ initialProject, demo = false }: { initialProject?:
         />
         <section className="panel side">
           <Preview
-            placed={placed}
-            cues={cues}
+            model={model}
             characters={project.characters}
             time={player.time}
             playing={player.playing}
             video={project.video}
             movie={project.movie}
+            bgm={project.bgm}
           />
           <div className="movie-box">
             <h2>背景動画</h2>
@@ -432,6 +460,35 @@ export default function App({ initialProject, demo = false }: { initialProject?:
                 <p className="hint">動画を読み込むと、その上にセリフ・字幕・立ち絵を重ねられます。</p>
                 <div className="row">
                   <button onClick={pickMovie}>動画を読み込む</button>
+                </div>
+              </>
+            )}
+          </div>
+          <div className="movie-box">
+            <h2>BGM</h2>
+            {project.bgm ? (
+              <>
+                <span className="name" title={project.bgm.path}>
+                  {fileName(project.bgm.path)}（{project.bgm.duration.toFixed(1)} 秒・くり返し）
+                </span>
+                <label>
+                  音量 {project.bgm.volume}%
+                  <input type="range" min={0} max={100} value={project.bgm.volume} onChange={(e) => setBgm({ ...project.bgm!, volume: +e.target.value })} />
+                </label>
+                <label>
+                  セリフの間 {project.bgm.duck}%（BGM の音量に対して）
+                  <input type="range" min={0} max={100} value={project.bgm.duck} onChange={(e) => setBgm({ ...project.bgm!, duck: +e.target.value })} />
+                </label>
+                <div className="row">
+                  <button onClick={pickBgm}>別の曲にする</button>
+                  <button onClick={() => setBgm(undefined)}>外す</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="hint">BGM はくり返し流れ、セリフの間は自動で小さくなります。</p>
+                <div className="row">
+                  <button onClick={pickBgm}>BGM を読み込む</button>
                 </div>
               </>
             )}
@@ -481,6 +538,17 @@ export default function App({ initialProject, demo = false }: { initialProject?:
             </footer>
           </div>
         </div>
+      )}
+      {dialog === "dictionary" && (
+        <DictionaryDialog
+          dictionary={project.dictionary ?? []}
+          onClose={() => setDialog(null)}
+          onSave={(dictionary) => {
+            setProject((p) => ({ ...p, dictionary }));
+            setDialog(null);
+            setMessage("読み方を保存しました。読みが変わった行は「すべて生成」で作り直されます");
+          }}
+        />
       )}
       {dialog === "import" && (
         <ImportDialog
@@ -568,6 +636,57 @@ function ImportDialog(props: {
           <button onClick={props.onClose}>キャンセル</button>
           <button className="primary" disabled={!text.trim()} onClick={() => props.onImport(importScript(text, props.characters), replace)}>
             取り込む
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+/** 読み方の辞書。字幕は表記のまま、声だけ読み方で読ませる */
+function DictionaryDialog(props: { dictionary: Reading[]; onClose: () => void; onSave: (d: Reading[]) => void }) {
+  const [rows, setRows] = useState<Reading[]>(() => (props.dictionary.length ? props.dictionary : [{ word: "", reading: "" }]));
+  const set = (i: number, r: Reading) => setRows(rows.map((x, k) => (k === i ? r : x)));
+  return (
+    <div className="modal" onMouseDown={props.onClose}>
+      <div className="dialog" onMouseDown={(e) => e.stopPropagation()}>
+        <h2>読み方</h2>
+        <p className="hint">
+          字幕は「表記」のまま出し、声だけ「読み方」で読みます。1 か所だけ変えたいときは、セリフに「{"{"}鴎外|おうがい{"}"}」のように書けます。
+        </p>
+        <div className="dict-scroll">
+          <table className="dict-table">
+            <thead>
+              <tr>
+                <td className="hint">表記</td>
+                <td className="hint">読み方</td>
+                <td />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i}>
+                  <td>
+                    <input value={r.word} placeholder="鴎外" onChange={(e) => set(i, { ...r, word: e.target.value })} />
+                  </td>
+                  <td>
+                    <input value={r.reading} placeholder="おうがい" onChange={(e) => set(i, { ...r, reading: e.target.value })} />
+                  </td>
+                  <td>
+                    <button className="danger" onClick={() => setRows(rows.filter((_, k) => k !== i))}>
+                      ×
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button onClick={() => setRows([...rows, { word: "", reading: "" }])}>＋ 追加</button>
+        <footer>
+          <button onClick={props.onClose}>キャンセル</button>
+          <button className="primary" onClick={() => props.onSave(rows.filter((r) => r.word.trim() && r.reading.trim()))}>
+            保存
           </button>
         </footer>
       </div>

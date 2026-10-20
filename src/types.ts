@@ -1,9 +1,15 @@
-/** 立ち絵。口の形ごとに同じ大きさの画像を用意する */
-export interface Portrait {
+/** 口の形ごとの画像。同じ大きさにそろえる */
+export interface MouthImages {
   closed: string;
   open: string;
   /** なければ open を使う */
   half?: string;
+}
+
+/** 立ち絵。口の形ごとに同じ大きさの画像を用意する */
+export interface Portrait extends MouthImages {
+  /** 表情差分。名前ごとに口の形 3 枚（いつもの絵と同じ大きさ） */
+  expressions?: Record<string, MouthImages>;
   /** 画像の大きさ（px） */
   width: number;
   height: number;
@@ -46,6 +52,12 @@ export interface Line {
   pause: number;
   /** 話し始める時刻（秒）。なければ前の行のあとに続ける */
   at?: number;
+  /** この行から出す画像。null でこの行から消す、なければ前のまま */
+  slide?: Slide | null;
+  /** この行から出す見出し（章の区切りにもなる）。"" で消す、なければ前のまま */
+  title?: string;
+  /** この行を話す間の表情（立ち絵の expressions の名前）。なければいつもの絵 */
+  expression?: string;
   audio?: GeneratedAudio;
 }
 
@@ -69,12 +81,39 @@ export interface Movie {
   volume: number;
 }
 
+/** 場面ごとに出す画像（表や図のスライドなど） */
+export interface Slide {
+  path: string;
+  width: number;
+  height: number;
+  /** 画面（字幕の上の部分）に収まる大きさに対する割合（%） */
+  scale: number;
+}
+
+/** BGM。セリフの間は自動で小さくする */
+export interface Bgm {
+  path: string;
+  duration: number;
+  /** 音量（0〜100） */
+  volume: number;
+  /** セリフの間の音量。volume に対する割合（%） */
+  duck: number;
+}
+
+/** 読み方の辞書。字幕は word のまま、声は reading で読む */
+export interface Reading {
+  word: string;
+  reading: string;
+}
+
 export interface Project {
   version: 1;
   characters: Character[];
   lines: Line[];
   video: VideoSettings;
   movie?: Movie;
+  bgm?: Bgm;
+  dictionary?: Reading[];
 }
 
 export interface Settings {
