@@ -27,10 +27,26 @@ function loadSettings(): Settings {
   }
 }
 
+/** 体験版の立ち絵は埋め込み画像なので、exo では読みやすいファイル名に置き換える */
+const demoNames = (cs: Character[]) =>
+  cs.map((c) =>
+    c.portrait
+      ? {
+          ...c,
+          portrait: {
+            ...c.portrait,
+            closed: `C:\\立ち絵\\${c.name}_口閉じ.png`,
+            half: c.portrait.half && `C:\\立ち絵\\${c.name}_半開き.png`,
+            open: `C:\\立ち絵\\${c.name}_口開き.png`,
+          },
+        }
+      : c,
+  );
+
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-export default function App() {
-  const [project, setProject] = useState<Project>(emptyProject);
+export default function App({ initialProject, demo = false }: { initialProject?: Project; demo?: boolean }) {
+  const [project, setProject] = useState<Project>(() => initialProject ?? emptyProject());
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [narrators, setNarrators] = useState<string[]>([]);
@@ -39,6 +55,8 @@ export default function App() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [dialog, setDialog] = useState<"settings" | "import" | null>(null);
+  /** 体験版で書き出しの代わりに中身を見せる */
+  const [output, setOutput] = useState<{ title: string; text: string } | null>(null);
   const [pxPerSec, setPxPerSec] = useState(60);
 
   const placed = useMemo(() => layout(project.lines, project.characters), [project]);
@@ -143,6 +161,10 @@ export default function App() {
 
   // ---- ファイル ----
   const saveProject = async (as = false) => {
+    if (demo) {
+      setMessage("体験版では保存できません。パソコン版で使えます");
+      return;
+    }
     let path = projectPath;
     if (!path || as) {
       path = await save({ filters: [{ name: "プロジェクト", extensions: ["vpe.json"] }], defaultPath: "project.vpe.json" });
@@ -184,6 +206,7 @@ export default function App() {
   const clips = () => withAudio().map((p) => ({ path: p.line.audio!.path, start: p.start }));
 
   const exportAs = async (kind: "exo" | "wav" | "srt" | "mp4") => {
+    if (demo) return previewExport(kind);
     const out = await save({ filters: [{ name: kind.toUpperCase(), extensions: [kind] }], defaultPath: `output.${kind}` });
     if (!out) return;
     try {
@@ -230,6 +253,23 @@ export default function App() {
     } catch (e) {
       setMessage(errorText(e));
     }
+  };
+
+  /** 体験版：ファイルに書く代わりに、書き出す中身をそのまま見せる */
+  const previewExport = (kind: "exo" | "wav" | "srt" | "mp4") => {
+    if (kind === "wav" || kind === "mp4") {
+      setMessage(`${kind === "wav" ? "音声" : "動画"}の書き出しはパソコン版だけです。exo と字幕は中身を見られます`);
+      return;
+    }
+    if (kind === "exo" && withAudio().length < placed.length) {
+      setMessage("未生成の行があります。先に「すべて生成」をしてください");
+      return;
+    }
+    setOutput(
+      kind === "exo"
+        ? { title: "AviUtl（.exo）の中身", text: buildExo(placed, cues, demoNames(project.characters), project.video) }
+        : { title: "字幕（.srt）の中身", text: buildSrt(cues) },
+    );
   };
 
   /** 画像を選んで、その大きさと一緒に返す */
@@ -290,7 +330,12 @@ export default function App() {
           <option value="srt">字幕（.srt）</option>
         </select>
         <button onClick={() => setDialog("settings")}>設定</button>
-        <UpdateBanner />
+        {!demo && <UpdateBanner />}
+        {demo && (
+          <p className="demo-note">
+            体験版です。声は VOICEPEAK の代わりの仮の音で、保存と書き出しはパソコン版で使えます。
+          </p>
+        )}
       </header>
 
       <main className="workspace">
@@ -356,6 +401,18 @@ export default function App() {
             setDialog(null);
           }}
         />
+      )}
+      {output && (
+        <div className="modal" onMouseDown={() => setOutput(null)}>
+          <div className="dialog" onMouseDown={(e) => e.stopPropagation()}>
+            <h2>{output.title}</h2>
+            <p className="hint">パソコン版ではこの内容がファイルに保存されます。</p>
+            <textarea className="output" readOnly rows={16} value={output.text} />
+            <footer>
+              <button className="primary" onClick={() => setOutput(null)}>閉じる</button>
+            </footer>
+          </div>
+        </div>
       )}
       {dialog === "import" && (
         <ImportDialog
