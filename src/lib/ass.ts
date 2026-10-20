@@ -1,9 +1,10 @@
-import type { PlacedLine, VideoSettings } from "../types";
+import type { VideoSettings } from "../types";
+import type { Cue } from "./subtitle";
 
 /** MP4 書き出し用の ASS 字幕。白文字にキャラ色の縁取りをつける */
-export function buildAss(placed: PlacedLine[], video: VideoSettings): string {
+export function buildAss(cues: Cue[], video: VideoSettings): string {
   const styles = new Map<string, string>();
-  for (const p of placed) {
+  for (const p of cues) {
     if (styles.has(p.character.id)) continue;
     styles.set(
       p.character.id,
@@ -16,7 +17,7 @@ export function buildAss(placed: PlacedLine[], video: VideoSettings): string {
     "ScriptType: v4.00+",
     `PlayResX: ${video.width}`,
     `PlayResY: ${video.height}`,
-    "WrapStyle: 0",
+    "WrapStyle: 2",
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
@@ -24,9 +25,9 @@ export function buildAss(placed: PlacedLine[], video: VideoSettings): string {
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ...placed.map(
+    ...cues.map(
       (p) =>
-        `Dialogue: 0,${assTime(p.start)},${assTime(p.end)},${styleName.get(p.character.id)},,0,0,0,,${p.line.text.replace(/\r?\n/g, "\\N")}`,
+        `Dialogue: 0,${assTime(p.start)},${assTime(p.end)},${styleName.get(p.character.id)},,0,0,0,,${p.text.replace(/\n/g, "\\N")}`,
     ),
     "",
   ].join("\n");
@@ -47,11 +48,11 @@ export function assColor(hex: string): string {
 }
 
 /** 字幕だけ欲しい人向けの SRT */
-export function buildSrt(placed: PlacedLine[]): string {
+export function buildSrt(cues: Cue[]): string {
   const t = (sec: number) => {
     const ms = Math.round(sec * 1000);
     const pad = (n: number, w = 2) => String(n).padStart(w, "0");
     return `${pad(Math.floor(ms / 3600000))}:${pad(Math.floor((ms % 3600000) / 60000))}:${pad(Math.floor((ms % 60000) / 1000))},${pad(ms % 1000, 3)}`;
   };
-  return placed.map((p, i) => `${i + 1}\n${t(p.start)} --> ${t(p.end)}\n${p.line.text}\n`).join("\n");
+  return cues.map((p, i) => `${i + 1}\n${t(p.start)} --> ${t(p.end)}\n${p.text}\n`).join("\n");
 }

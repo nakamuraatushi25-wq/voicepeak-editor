@@ -1,3 +1,18 @@
+/** 立ち絵。口の形ごとに同じ大きさの画像を用意する */
+export interface Portrait {
+  closed: string;
+  open: string;
+  /** なければ open を使う */
+  half?: string;
+  /** 画像の大きさ（px） */
+  width: number;
+  height: number;
+  /** 画面幅に対する中心の位置（0 左端〜1 右端） */
+  x: number;
+  /** 拡大率（%） */
+  scale: number;
+}
+
 export interface Character {
   id: string;
   name: string;
@@ -8,6 +23,7 @@ export interface Character {
   emotions: Record<string, number>;
   speed: number;
   pitch: number;
+  portrait?: Portrait;
 }
 
 export interface GeneratedAudio {
@@ -15,6 +31,8 @@ export interface GeneratedAudio {
   duration: number;
   /** 生成時の設定。変わっていたら作り直す */
   key: string;
+  /** 口パク。MOUTH_FPS ごとの開き具合 "0" 閉じ / "1" 半開き / "2" 開き */
+  mouth?: string;
 }
 
 export interface Line {

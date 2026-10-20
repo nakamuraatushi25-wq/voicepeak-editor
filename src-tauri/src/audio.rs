@@ -113,6 +113,31 @@ pub fn mix(clips: &[Clip], out: &Path, total_sec: f64) -> Result<(), String> {
     write_mono(out, rate, &buf)
 }
 
+/// 口パク用に、fps ごとの口の開き具合（0 閉じ / 1 半開き / 2 開き）を音量から求める
+pub fn mouth_levels(path: &Path, fps: u32) -> Result<Vec<u8>, String> {
+    let pcm = read_mono(path)?;
+    let window = (pcm.rate / fps.max(1)).max(1) as usize;
+    let rms: Vec<f32> = pcm
+        .samples
+        .chunks(window)
+        .map(|c| (c.iter().map(|s| s * s).sum::<f32>() / c.len() as f32).sqrt())
+        .collect();
+    let peak = rms.iter().cloned().fold(0.0f32, f32::max);
+    let open = (peak * 0.35).max(0.02);
+    let half = (peak * 0.15).max(0.01);
+    let mut levels: Vec<u8> = rms
+        .iter()
+        .map(|&r| if r >= open { 2 } else if r >= half { 1 } else { 0 })
+        .collect();
+    // 1 フレームだけ閉じるとパクパクしすぎるので埋める
+    for i in 1..levels.len().saturating_sub(1) {
+        if levels[i] == 0 && levels[i - 1] > 0 && levels[i + 1] > 0 {
+            levels[i] = 1;
+        }
+    }
+    Ok(levels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +158,22 @@ mod tests {
         concat(&[&a, &b], &out).unwrap();
         // 0.5 秒分の b が 48kHz に変換されて後ろにつく
         assert!((duration_sec(&out).unwrap() - 1.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn mouth_follows_volume() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.wav");
+        // 0.1 秒の無音 → 0.1 秒の大きな音 → 0.1 秒の小さな音
+        let mut s = vec![0.0f32; 4_800];
+        s.extend((0..4_800).map(|i| if i % 2 == 0 { 0.8 } else { -0.8 }));
+        s.extend((0..4_800).map(|i| if i % 2 == 0 { 0.2 } else { -0.2 }));
+        write_mono(&a, 48_000, &s).unwrap();
+        let m = mouth_levels(&a, 30).unwrap();
+        assert_eq!(m.len(), 9);
+        assert_eq!(&m[0..3], &[0, 0, 0]);
+        assert_eq!(&m[3..6], &[2, 2, 2]);
+        assert_eq!(&m[6..9], &[1, 1, 1]);
     }
 
     #[test]
