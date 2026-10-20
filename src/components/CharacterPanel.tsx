@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { Character, Portrait } from "../types";
+import type { Character, MouthImages, Portrait } from "../types";
+import { fileName } from "../lib/media";
 import { EmotionSliders } from "./EmotionSliders";
 
 interface Props {
@@ -82,7 +83,26 @@ const SLOTS: { key: "closed" | "half" | "open"; label: string }[] = [
   { key: "open", label: "口開き" },
 ];
 
-/** 立ち絵の画像と位置。口閉じと口開きの 2 枚があれば口パクする */
+type Picked = { path: string; width: number; height: number };
+
+/** 口の形 3 枚の画像を選ぶ枠 */
+function MouthSlots(props: { images?: Partial<MouthImages>; onPick: (key: (typeof SLOTS)[number]["key"]) => void }) {
+  return (
+    <div className="slots">
+      {SLOTS.map((s) => {
+        const file = props.images?.[s.key];
+        return (
+          <button key={s.key} className="slot" onClick={() => props.onPick(s.key)} title={file ? fileName(file) : "画像を選ぶ"}>
+            {file ? <img src={convertFileSrc(file)} alt={s.label} /> : <span>＋</span>}
+            <small>{s.label}</small>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 立ち絵の画像と位置。口閉じと口開きの 2 枚があれば口パクする。表情差分も追加できる */
 function PortraitEditor(props: {
   character: Character;
   index: number;
@@ -91,7 +111,7 @@ function PortraitEditor(props: {
 }) {
   const p = props.character.portrait;
   const pick = async (key: (typeof SLOTS)[number]["key"]) => {
-    const img = await props.onPick();
+    const img: Picked | null = await props.onPick();
     if (!img) return;
     const base: Portrait = p ?? {
       closed: img.path,
@@ -104,20 +124,23 @@ function PortraitEditor(props: {
     };
     props.onChange({ ...base, [key]: img.path, width: img.width, height: img.height });
   };
+  const expressions = Object.entries(p?.expressions ?? {});
+  const setExpressions = (list: [string, MouthImages][]) => p && props.onChange({ ...p, expressions: Object.fromEntries(list) });
+  const pickExpression = async (index: number, key: (typeof SLOTS)[number]["key"]) => {
+    const img = await props.onPick();
+    if (!img) return;
+    setExpressions(expressions.map(([name, e], i) => [name, i === index ? { ...e, [key]: img.path } : e]));
+  };
+  const addExpression = () => {
+    if (!p) return;
+    let n = expressions.length + 1;
+    while (p.expressions?.[`表情${n}`]) n++;
+    setExpressions([...expressions, [`表情${n}`, { closed: p.closed, open: p.open, half: p.half }]]);
+  };
   return (
     <div className="portrait-editor">
       <h3>立ち絵</h3>
-      <div className="slots">
-        {SLOTS.map((s) => {
-          const file = p?.[s.key];
-          return (
-            <button key={s.key} className="slot" onClick={() => pick(s.key)} title={file ?? "画像を選ぶ"}>
-              {file ? <img src={convertFileSrc(file)} alt={s.label} /> : <span>＋</span>}
-              <small>{s.label}</small>
-            </button>
-          );
-        })}
-      </div>
+      <MouthSlots images={p} onPick={pick} />
       {p ? (
         <>
           {p.closed === p.open && <p className="hint">口開きの画像も選ぶと口パクします。</p>}
@@ -129,6 +152,25 @@ function PortraitEditor(props: {
             大きさ {p.scale}%
             <input type="range" min={10} max={300} value={p.scale} onChange={(e) => props.onChange({ ...p, scale: +e.target.value })} />
           </label>
+          <div className="expressions">
+            <h3>表情差分</h3>
+            <p className="hint">名前をつけた表情を作ると、セリフごとに選べます（「笑顔」「驚き」など）。画像はいつもの絵と同じ大きさにしてください。</p>
+            {expressions.map(([name, e], i) => (
+              <div key={i} className="expression">
+                <div className="row">
+                  <input
+                    value={name}
+                    onChange={(ev) => setExpressions(expressions.map(([n, x], k) => [k === i ? ev.target.value : n, x]))}
+                  />
+                  <button className="danger" onClick={() => setExpressions(expressions.filter((_, k) => k !== i))}>
+                    削除
+                  </button>
+                </div>
+                <MouthSlots images={e} onPick={(key) => pickExpression(i, key)} />
+              </div>
+            ))}
+            <button onClick={addExpression}>＋ 表情を追加</button>
+          </div>
           <button onClick={() => props.onChange(undefined)}>立ち絵を外す</button>
         </>
       ) : (

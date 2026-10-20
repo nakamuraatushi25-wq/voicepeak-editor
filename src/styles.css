@@ -94,7 +94,7 @@ label.check { flex-direction: row; align-items: center; gap: 6px; }
 
 .portrait { position: absolute; bottom: 0; transform: translateX(-50%); pointer-events: none; }
 .portrait-editor h3 { margin-top: 10px; }
-.portrait-editor .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.portrait-editor .slots, .expression .slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .portrait-editor .slot { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px; height: 92px; }
 .portrait-editor .slot img { max-width: 100%; height: 60px; object-fit: contain; }
 .portrait-editor .slot span { font-size: 22px; line-height: 60px; color: var(--muted); }
@@ -148,3 +148,18 @@ textarea.output { font-family: ui-monospace, Consolas, monospace; font-size: 12p
 .line .at { font-size: 11px; color: var(--accent); padding: 5px 0; }
 .start-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
 .start-row input[type="number"] { width: 90px; }
+.preview .slide { position: absolute; object-fit: fill; pointer-events: none; }
+.title-telop { position: absolute; top: 3%; left: 4%; right: 4%; text-align: center; color: #fff; font-weight: bold; -webkit-text-stroke: 0.4cqh #000; paint-order: stroke fill; z-index: 1; white-space: pre-line; }
+.chapter-head { list-style: none; margin: 10px 0 6px; padding: 4px 8px; border-left: 4px solid var(--accent); background: var(--panel-2); border-radius: 4px; font-weight: 600; font-size: 13px; }
+.line .marks { font-size: 11px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; grid-column: 1 / -1; }
+.scene-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.scene-row input[type="text"] { flex: 1; min-width: 140px; }
+.scene-row img { height: 40px; max-width: 80px; object-fit: contain; border: 1px solid var(--border); border-radius: 4px; }
+.dict-table { width: 100%; border-collapse: collapse; }
+.dict-table td { padding: 2px 4px; }
+.dict-table input { width: 100%; }
+.dict-scroll { max-height: 50vh; overflow: auto; }
+.expressions { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.expression { border-top: 1px dashed var(--border); padding-top: 6px; }
+.expression .row { display: flex; gap: 6px; align-items: center; }
+.expression .row input { flex: 1; }

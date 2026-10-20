@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { Character, Movie, PlacedLine } from "../types";
 import { fileName } from "../lib/media";
+import { displayText } from "../lib/reading";
 
 interface Props {
   placed: PlacedLine[];
@@ -101,7 +102,7 @@ export function Timeline(props: Props) {
                   p.line.id === selectedId ? "selected" : "",
                   p.line.at !== undefined ? "timed" : "",
                 ].join(" ")}
-                title={p.line.text}
+                title={displayText(p.line.text)}
                 style={{
                   left: at * pxPerSec,
                   width: Math.max(4, (p.end - p.start) * pxPerSec),
@@ -115,7 +116,7 @@ export function Timeline(props: Props) {
                 onPointerUp={onPointerUp}
                 onPointerCancel={onPointerUp}
               >
-                {p.line.text}
+                {displayText(p.line.text)}
               </div>
             );
           })}

@@ -1,5 +1,8 @@
 mod audio;
+mod mp4;
 mod voicepeak;
+
+use mp4::{ClipIn, Mp4Request};
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -121,83 +124,12 @@ fn write_text_file(path: String, content: String, encoding: Option<String>) -> R
     std::fs::write(&path, bytes).map_err(|e| e.to_string())
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClipIn {
-    path: String,
-    start: f64,
-}
 
 #[tauri::command]
 async fn export_wav(clips: Vec<ClipIn>, total: f64, out: String) -> Result<(), String> {
     let clips: Vec<audio::Clip> =
         clips.iter().map(|c| audio::Clip { path: Path::new(&c.path), start_sec: c.start }).collect();
     audio::mix(&clips, Path::new(&out), total)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PortraitTrack {
-    closed: String,
-    open: String,
-    half: Option<String>,
-    /// 画面幅に対する中心の位置（0〜1）
-    x: f64,
-    /// 拡大率（%）
-    scale: f64,
-    /// 口が開いている区間 (開始秒, 終了秒, 1 半開き / 2 開き)。重ならず昇順
-    segments: Vec<(f64, f64, u8)>,
-}
-
-/// ffmpeg の concat 用リスト。口の状態ごとに画像を切り替えた動画として読ませる
-fn concat_list(p: &PortraitTrack, total: f64) -> String {
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
-    let image = |level: u8| match level {
-        0 => &p.closed,
-        1 => p.half.as_ref().unwrap_or(&p.open),
-        _ => &p.open,
-    };
-    let mut out = String::from("ffconcat version 1.0\n");
-    let mut push = |level: u8, dur: f64| {
-        if dur > 0.0005 {
-            out += &format!("file {}\nduration {:.4}\n", quote(image(level)), dur);
-        }
-    };
-    let mut t = 0.0;
-    for &(start, end, level) in &p.segments {
-        push(0, start - t);
-        push(level, end - start.max(t));
-        t = end.max(t);
-    }
-    push(0, (total - t).max(0.04));
-    // 最後の画像は duration が無視されるのでもう一度並べる
-    out += &format!("file {}\n", quote(&p.closed));
-    out
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Mp4Request {
-    ffmpeg: String,
-    portraits: Vec<PortraitTrack>,
-    clips: Vec<ClipIn>,
-    total: f64,
-    ass: String,
-    width: u32,
-    height: u32,
-    fps: u32,
-    background: String,
-    /// 背景動画。あれば単色の背景の上に、画面に収まる大きさで中央に置く
-    #[serde(default)]
-    movie: Option<MovieIn>,
-    out: String,
-}
-
-#[derive(Deserialize)]
-struct MovieIn {
-    path: String,
-    /// もとの音の大きさ（0〜100）
-    volume: f64,
 }
 
 /// 動画に音声トラックがあるか。ffmpeg -i が出すストリーム一覧で判定する
@@ -219,81 +151,32 @@ async fn export_mp4(req: Mp4Request) -> Result<(), String> {
     // 字幕フィルタのパス指定を避けるため、作業フォルダに置いて相対名で渡す
     let work = std::env::temp_dir().join(format!("voicepeak-editor-{}", std::process::id()));
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
-    let wav = work.join("mix.wav");
+    let result = run_mp4(&req, &work);
+    let _ = std::fs::remove_dir_all(&work);
+    result
+}
+
+fn run_mp4(req: &Mp4Request, work: &Path) -> Result<(), String> {
     let clips: Vec<audio::Clip> = req
         .clips
         .iter()
         .map(|c| audio::Clip { path: Path::new(&c.path), start_sec: c.start })
         .collect();
-    audio::mix(&clips, &wav, req.total)?;
-    std::fs::write(work.join("subs.ass"), &req.ass).map_err(|e| e.to_string())?;
-
-    let mut args: Vec<String> = vec![
-        "-y".into(),
-        "-f".into(),
-        "lavfi".into(),
-        "-i".into(),
-        format!("color=c={}:s={}x{}:r={}", req.background, req.width, req.height, req.fps),
-        "-i".into(),
-        "mix.wav".into(),
-    ];
-    // 立ち絵は 1 キャラ 1 入力。下から順に重ね、最後に字幕をのせる
-    let mut graph = String::from("[0:v]null[v0]");
-    for (i, p) in req.portraits.iter().enumerate() {
-        let list = format!("portrait{i}.txt");
-        std::fs::write(work.join(&list), concat_list(p, req.total)).map_err(|e| e.to_string())?;
-        args.extend(["-f", "concat", "-safe", "0", "-i"].map(String::from));
-        args.push(list);
-        let input = i + 2;
-        let s = p.scale / 100.0;
-        graph += &format!(
-            ";[{input}:v]scale=iw*{s}:ih*{s},format=rgba[p{i}];[v{i}][p{i}]overlay=x=main_w*{x}-overlay_w/2:y=main_h-overlay_h:eof_action=repeat[v{n}]",
-            x = p.x,
-            n = i + 1
-        );
+    audio::mix(&clips, &work.join("mix.wav"), req.total)?;
+    let movie_audio = req.movie.as_ref().is_some_and(|m| has_audio(&req.ffmpeg, &m.path));
+    let (args, files) = mp4::build(req, movie_audio);
+    for (name, content) in files {
+        std::fs::write(work.join(name), content).map_err(|e| e.to_string())?;
     }
-    graph += &format!(";[v{}]subtitles=subs.ass[out]", req.portraits.len());
-    let mut audio_out = String::from("1:a");
-    if let Some(m) = &req.movie {
-        // 背景動画は最後の入力。単色の背景に重ね、動画が終わったあとは単色に戻る
-        let input = req.portraits.len() + 2;
-        args.extend(["-i".into(), m.path.clone()]);
-        graph = graph.replacen(
-            "[0:v]null[v0]",
-            &format!(
-                "[{input}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,setsar=1,fps={fps}[mv];[0:v][mv]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2:eof_action=pass[v0]",
-                w = req.width,
-                h = req.height,
-                fps = req.fps
-            ),
-            1,
-        );
-        if m.volume > 0.0 && has_audio(&req.ffmpeg, &m.path) {
-            graph += &format!(
-                ";[{input}:a]volume={v}[ma];[1:a][ma]amix=inputs=2:duration=first:normalize=0[aout]",
-                v = m.volume / 100.0
-            );
-            audio_out = "[aout]".into();
-        }
-    }
-    args.extend(
-        [
-            "-filter_complex", &graph, "-map", "[out]", "-map", &audio_out, "-r",
-            &req.fps.to_string(), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-            "-t", &format!("{:.3}", req.total), "-shortest", &req.out,
-        ]
-        .map(String::from),
-    );
 
     let mut cmd = Command::new(&req.ffmpeg);
-    cmd.current_dir(&work).args(&args);
+    cmd.current_dir(work).args(&args);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000);
     }
     let output = cmd.output().map_err(|e| format!("ffmpeg を起動できません: {e}"))?;
-    let _ = std::fs::remove_dir_all(&work);
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         let tail: Vec<&str> = err.lines().rev().take(5).collect();
@@ -376,18 +259,33 @@ mod tests {
                 .unwrap();
             assert!(ok.success());
         }
-        let portrait = |x: f64| PortraitTrack {
-            closed: closed.to_string_lossy().into_owned(),
-            open: open.to_string_lossy().into_owned(),
-            half: None,
+        let (c, o) = (closed.to_string_lossy().into_owned(), open.to_string_lossy().into_owned());
+        let portrait = |x: f64| mp4::PortraitTrack {
+            frames: vec![(0.0, 0.2, c.clone()), (0.2, 0.5, o.clone()), (0.5, 0.6, c.clone()), (0.6, 1.0, o.clone()), (1.0, 4.5, c.clone())],
             x,
             scale: 100.0,
-            segments: vec![(0.2, 0.5, 2), (0.6, 1.0, 1)],
         };
+        // 左上に 0〜1 秒だけ緑の画像（スライド）
+        let slide = dir.path().join("slide.png");
+        let ok = Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=lime:s=50x25", "-frames:v", "1"])
+            .arg(&slide)
+            .status()
+            .unwrap();
+        assert!(ok.success());
 
         tauri::async_runtime::block_on(export_mp4(Mp4Request {
             ffmpeg: "ffmpeg".into(),
             portraits: vec![portrait(0.2), portrait(0.8)],
+            slides: vec![mp4::SlideIn {
+                path: slide.to_string_lossy().into_owned(),
+                start: 0.0,
+                end: 1.0,
+                left: 10.0,
+                top: 10.0,
+                width: 100.0,
+                height: 50.0,
+            }],
             clips: vec![ClipIn { path: wav.clone(), start: 0.0 }, ClipIn { path: wav, start: 2.5 }],
             total: 4.5,
             ass: "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: c0,Arial,20,&H00FFFFFF,&H00FFFFFF,&H00F7C34F,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.00,0:00:02.00,c0,,0,0,0,,テスト\n".into(),
@@ -396,6 +294,7 @@ mod tests {
             fps: 30,
             background: "#202020".into(),
             movie: None,
+            bgm: None,
             out: mp4.to_string_lossy().into_owned(),
         }))
         .unwrap();
@@ -415,6 +314,20 @@ mod tests {
         let closed_px = probe("1.5");
         assert!(open_px[0] > open_px[2], "開いた口は赤: {open_px:?}");
         assert!(closed_px[2] > closed_px[0], "閉じた口は青: {closed_px:?}");
+        // スライドは 0〜1 秒だけ、拡大して左上に出る
+        let at = |t: &str| {
+            Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-ss", t, "-i"])
+                .arg(&mp4)
+                .args(["-frames:v", "1", "-vf", "crop=4:4:90:50", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap()
+                .stdout
+        };
+        let shown = at("0.5");
+        let hidden = at("2.0");
+        assert!(shown[1] > 200 && shown[0] < 60, "スライドは緑: {shown:?}");
+        assert!(hidden[1] < 60, "1 秒を過ぎたら消える: {hidden:?}");
     }
 
     #[test]
@@ -442,6 +355,7 @@ mod tests {
         tauri::async_runtime::block_on(export_mp4(Mp4Request {
             ffmpeg: "ffmpeg".into(),
             portraits: vec![],
+            slides: vec![],
             clips: vec![ClipIn { path: wav.to_string_lossy().into_owned(), start: 0.5 }],
             total: 3.0,
             ass: "[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n".into(),
@@ -449,7 +363,15 @@ mod tests {
             height: 180,
             fps: 30,
             background: "#000000".into(),
-            movie: Some(MovieIn { path: movie.to_string_lossy().into_owned(), volume: 50.0 }),
+            movie: Some(mp4::MovieIn { path: movie.to_string_lossy().into_owned(), volume: 50.0, offset: 0.0 }),
+            // BGM は動画の音声を使い回す（ループさせ、セリフの間は小さく）
+            bgm: Some(mp4::BgmIn {
+                path: movie.to_string_lossy().into_owned(),
+                volume: 30.0,
+                duck: 20.0,
+                speech: vec![(0.5, 1.5)],
+                offset: 0.0,
+            }),
             out: mp4.to_string_lossy().into_owned(),
         }))
         .unwrap();
@@ -472,22 +394,5 @@ mod tests {
         let info = String::from_utf8_lossy(&out.stderr);
         assert!(info.contains("Duration: 00:00:03.0") || info.contains("Duration: 00:00:02.9"), "{info}");
         assert!(info.contains("Audio:"));
-    }
-
-    #[test]
-    fn concat_list_fills_gaps_with_closed_mouth() {
-        let p = PortraitTrack {
-            closed: "C:\\a\\closed.png".into(),
-            open: "it's.png".into(),
-            half: None,
-            x: 0.5,
-            scale: 100.0,
-            segments: vec![(1.0, 1.5, 2)],
-        };
-        let list = concat_list(&p, 3.0);
-        assert_eq!(
-            list,
-            "ffconcat version 1.0\nfile 'C:\\a\\closed.png'\nduration 1.0000\nfile 'it'\\''s.png'\nduration 0.5000\nfile 'C:\\a\\closed.png'\nduration 1.5000\nfile 'C:\\a\\closed.png'\n"
-        );
     }
 }

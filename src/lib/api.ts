@@ -32,14 +32,8 @@ export const api = {
     invoke<void>("export_wav", { clips, total, out }),
   exportMp4: (req: {
     ffmpeg: string;
-    portraits: {
-      closed: string;
-      open: string;
-      half?: string;
-      x: number;
-      scale: number;
-      segments: [number, number, number][];
-    }[];
+    portraits: { frames: [number, number, string][]; x: number; scale: number }[];
+    slides: { path: string; start: number; end: number; left: number; top: number; width: number; height: number }[];
     clips: Clip[];
     total: number;
     ass: string;
@@ -47,7 +41,8 @@ export const api = {
     height: number;
     fps: number;
     background: string;
-    movie?: { path: string; volume: number };
+    movie?: { path: string; volume: number; offset: number };
+    bgm?: { path: string; volume: number; duck: number; speech: [number, number][]; offset: number };
     out: string;
   }) => invoke<void>("export_mp4", { req }),
 };

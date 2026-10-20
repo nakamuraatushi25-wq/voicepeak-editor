@@ -1,27 +1,23 @@
-import type { Character, Movie, PlacedLine, VideoSettings } from "../types";
-import type { Cue } from "./subtitle";
-import { mouthSegments } from "./mouth";
+import type { Bgm, Character, Movie, VideoSettings } from "../types";
+import { slideBox, type Model } from "./scene";
 
 /**
- * AviUtl 拡張編集のオブジェクトファイル（.exo）を作る。
- * キャラ数を n、キャラの番号を i（0 始まり）として、下から
- *   立ち絵（口閉じ）: 2i+1 / 口パク: 2i+2 / 音声: 2n+i+1 / 字幕: 3n+i+1
- * の順に重ねる。背景動画があるときは 1 に動画、2 にその音声を置き、ほかは 2 つ上にずらす。
+ * AviUtl 拡張編集のオブジェクトファイル（.exo）を作る。下から順に
+ *   背景動画・その音声 → 画像（スライド） → キャラごとの立ち絵 → キャラごとの声
+ *   → キャラごとの字幕 → 見出し → BGM
+ * のレイヤーに置く。使わないものはレイヤーを詰める。
  * 書き出し時は Shift_JIS・CRLF に変換すること（Rust 側で行う）。
  */
 export function buildExo(
-  placed: PlacedLine[],
-  cues: Cue[],
+  model: Model,
   characters: Character[],
   video: VideoSettings,
   movie?: Movie,
+  bgm?: Bgm,
 ): string {
   const toFrame = (sec: number) => Math.round(sec * video.fps);
-  const total = placed.reduce((m, p) => Math.max(m, p.end), movie?.duration ?? 0);
-  const base = movie ? 2 : 0;
+  const total = model.total;
   const length = Math.max(1, toFrame(total));
-  const n = characters.length;
-  const index = new Map(characters.map((c, i) => [c.id, i]));
   const out: string[] = [
     "[exedit]",
     `width=${video.width}`,
@@ -34,10 +30,15 @@ export function buildExo(
   ];
 
   let obj = 0;
+  let nextLayer = 1;
+  const takeLayer = () => nextLayer++;
+  /** 置けたら true。1 フレームに満たないものは置かない */
   const header = (startSec: number, endSec: number, layer: number, audio = false) => {
     const start = toFrame(startSec) + 1;
-    const end = Math.max(start, toFrame(endSec));
-    out.push(`[${obj}]`, `start=${start}`, `end=${end}`, `layer=${layer + base}`, "overlay=1", audio ? "audio=1" : "camera=0");
+    const end = toFrame(endSec);
+    if (end < start) return false;
+    out.push(`[${obj}]`, `start=${start}`, `end=${end}`, `layer=${layer}`, "overlay=1", audio ? "audio=1" : "camera=0");
+    return true;
   };
   const draw = (x: number, y: number, zoom: number) =>
     out.push(
@@ -51,84 +52,29 @@ export function buildExo(
       "回転=0.00",
       "blend=0",
     );
-  const image = (file: string, startSec: number, endSec: number, layer: number, c: Character) => {
-    const p = c.portrait!;
-    header(startSec, endSec, layer);
-    out.push(`[${obj}.0]`, "_name=画像ファイル", `file=${file}`);
-    // 座標は画面中央が原点。画像の下端を画面の下端にそろえる
-    const x = (p.x - 0.5) * video.width;
-    const y = video.height / 2 - (p.height * p.scale) / 100 / 2;
-    draw(x, y, p.scale);
+  const sound = (file: string, startSec: number, endSec: number, layer: number, position: number, volume: number, loop = false, linked = false) => {
+    if (!header(startSec, endSec, layer, true)) return;
+    out.push(
+      `[${obj}.0]`,
+      "_name=音声ファイル",
+      `再生位置=${position.toFixed(2)}`,
+      "再生速度=100.0",
+      `ループ再生=${loop ? 1 : 0}`,
+      `動画ファイルと連携=${linked ? 1 : 0}`,
+      `file=${file}`,
+      `[${obj}.1]`,
+      "_name=標準再生",
+      `音量=${volume.toFixed(1)}`,
+      "左右=0.0",
+    );
     obj++;
   };
-
-  if (movie) {
-    // 動画は画面に収まる大きさにして中央に置く
-    const zoom = Math.min(video.width / movie.width, video.height / movie.height) * 100;
-    header(0, movie.duration, 1 - base);
-    out.push(
-      `[${obj}.0]`,
-      "_name=動画ファイル",
-      "再生位置=1",
-      "再生速度=100.0",
-      "ループ再生=0",
-      "アルファチャンネルを読み込む=0",
-      `file=${movie.path}`,
-    );
-    draw(0, 0, zoom);
-    obj++;
-    header(0, movie.duration, 2 - base, true);
-    out.push(
-      `[${obj}.0]`,
-      "_name=音声ファイル",
-      "再生位置=0.00",
-      "再生速度=100.0",
-      "ループ再生=0",
-      "動画ファイルと連携=1",
-      `file=${movie.path}`,
-      `[${obj}.1]`,
-      "_name=標準再生",
-      `音量=${movie.volume.toFixed(1)}`,
-      "左右=0.0",
-    );
-    obj++;
-  }
-
-  characters.forEach((c, i) => {
-    if (!c.portrait || total <= 0) return;
-    image(c.portrait.closed, 0, total, 2 * i + 1, c);
-    for (const [start, end, level] of mouthSegments(placed, c)) {
-      if (toFrame(end) <= toFrame(start)) continue;
-      const file = level === 1 ? (c.portrait.half ?? c.portrait.open) : c.portrait.open;
-      image(file, start, end, 2 * i + 2, c);
-    }
-  });
-
-  for (const p of placed) {
-    if (!p.line.audio) continue;
-    header(p.start, p.end, 2 * n + index.get(p.character.id)! + 1, true);
-    out.push(
-      `[${obj}.0]`,
-      "_name=音声ファイル",
-      "再生位置=0.00",
-      "再生速度=100.0",
-      "ループ再生=0",
-      "動画ファイルと連携=0",
-      `file=${p.line.audio.path}`,
-      `[${obj}.1]`,
-      "_name=標準再生",
-      "音量=100.0",
-      "左右=0.0",
-    );
-    obj++;
-  }
-
-  for (const cue of cues) {
-    header(cue.start, cue.end, 3 * n + index.get(cue.character.id)! + 1);
+  const text = (body: string, startSec: number, endSec: number, layer: number, opts: { size: number; color: string; align: number; y: number }) => {
+    if (!header(startSec, endSec, layer)) return;
     out.push(
       `[${obj}.0]`,
       "_name=テキスト",
-      `サイズ=${video.fontSize}`,
+      `サイズ=${opts.size}`,
       "表示速度=0.0",
       "文字毎に個別オブジェクト=0",
       "移動座標上に表示する=0",
@@ -139,19 +85,117 @@ export function buildExo(
       "autoadjust=0",
       "soft=1",
       "monospace=0",
-      "align=7",
+      `align=${opts.align}`,
       "spacing_x=0",
       "spacing_y=0",
       "precision=1",
-      `color=${cue.character.color.replace("#", "").toLowerCase()}`,
+      `color=${opts.color.replace("#", "").toLowerCase()}`,
       "color2=000000",
       `font=${video.font}`,
-      `text=${encodeExoText(cue.text.replace(/\n/g, "\r\n"))}`,
+      `text=${encodeExoText(body.replace(/\n/g, "\r\n"))}`,
     );
-    draw(0, video.height * 0.38, 100);
+    draw(0, opts.y, 100);
     obj++;
+  };
+
+  // 背景動画。章だけ書き出すときは、その章の場面から再生する
+  if (movie) {
+    const videoLayer = takeLayer();
+    const audioLayer = takeLayer();
+    const end = Math.min(total, movie.duration - model.offset);
+    if (header(0, end, videoLayer)) {
+      const zoom = Math.min(video.width / movie.width, video.height / movie.height) * 100;
+      out.push(
+        `[${obj}.0]`,
+        "_name=動画ファイル",
+        `再生位置=${toFrame(model.offset) + 1}`,
+        "再生速度=100.0",
+        "ループ再生=0",
+        "アルファチャンネルを読み込む=0",
+        `file=${movie.path}`,
+      );
+      draw(0, 0, zoom);
+      obj++;
+      sound(movie.path, 0, end, audioLayer, model.offset, movie.volume, false, true);
+    }
+  }
+
+  // 画像（スライド）。座標は画面中央が原点
+  if (model.slides.length) {
+    const layer = takeLayer();
+    for (const s of model.slides) {
+      if (!header(s.start, s.end, layer)) continue;
+      const box = slideBox(s.value, video.width, video.height);
+      out.push(`[${obj}.0]`, "_name=画像ファイル", `file=${s.value.path}`);
+      draw(0, box.top + box.h / 2 - video.height / 2, box.zoom * 100);
+      obj++;
+    }
+  }
+
+  // 立ち絵。表情と口の形ごとのコマを 1 つのレイヤーにすき間なく並べる
+  for (const c of characters) {
+    const frames = model.frames.get(c.id);
+    if (!c.portrait || !frames?.length) continue;
+    const layer = takeLayer();
+    const p = c.portrait;
+    // 下端を画面の下端にそろえる
+    const x = (p.x - 0.5) * video.width;
+    const y = video.height / 2 - (p.height * p.scale) / 100 / 2;
+    for (const f of frames) {
+      if (!header(f.start, f.end, layer)) continue;
+      out.push(`[${obj}.0]`, "_name=画像ファイル", `file=${f.value}`);
+      draw(x, y, p.scale);
+      obj++;
+    }
+  }
+
+  const voiceLayers = new Map(characters.map((c) => [c.id, 0]));
+  for (const c of characters) if (model.placed.some((p) => p.character.id === c.id && p.line.audio)) voiceLayers.set(c.id, takeLayer());
+  for (const p of model.placed) {
+    if (p.line.audio) sound(p.line.audio.path, p.start, p.end, voiceLayers.get(p.character.id)!, 0, 100);
+  }
+
+  const subtitleLayers = new Map(characters.map((c) => [c.id, 0]));
+  for (const c of characters) if (model.cues.some((q) => q.character.id === c.id)) subtitleLayers.set(c.id, takeLayer());
+  for (const cue of model.cues) {
+    text(cue.text, cue.start, cue.end, subtitleLayers.get(cue.character.id)!, {
+      size: video.fontSize,
+      color: cue.character.color,
+      align: 7,
+      y: video.height * 0.38,
+    });
+  }
+
+  // 見出しは画面の上に、字幕より少し小さく
+  if (model.titles.length) {
+    const layer = takeLayer();
+    for (const t of model.titles) {
+      text(t.value, t.start, t.end, layer, { size: Math.round(video.fontSize * 0.8), color: "#ffffff", align: 1, y: -video.height * 0.45 });
+    }
+  }
+
+  // BGM。セリフの間だけ音量を下げた区切りに分けて並べる
+  if (bgm) {
+    const layer = takeLayer();
+    for (const [start, end, speaking] of bgmSegments(model.speech, total)) {
+      const position = bgm.duration > 0 ? (model.offset + start) % bgm.duration : 0;
+      sound(bgm.path, start, end, layer, position, speaking ? (bgm.volume * bgm.duck) / 100 : bgm.volume, true);
+    }
   }
   return out.join("\n") + "\n";
+}
+
+/** 0〜total を「話している区間」と「そうでない区間」に分ける */
+export function bgmSegments(speech: [number, number][], total: number): [number, number, boolean][] {
+  const out: [number, number, boolean][] = [];
+  let t = 0;
+  for (const [s, e] of speech) {
+    if (s > t) out.push([t, s, false]);
+    out.push([Math.max(s, t), Math.min(e, total), true]);
+    t = Math.min(e, total);
+  }
+  if (t < total) out.push([t, total, false]);
+  return out.filter(([s, e]) => e > s);
 }
 
 /** テキストは UTF-16LE の 16 進表記を 4096 桁まで 0 埋めする */
