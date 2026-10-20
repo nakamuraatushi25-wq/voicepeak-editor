@@ -44,6 +44,8 @@ export interface Line {
   pitch: number;
   /** この行のあとに空ける秒数 */
   pause: number;
+  /** 話し始める時刻（秒）。なければ前の行のあとに続ける */
+  at?: number;
   audio?: GeneratedAudio;
 }
 
@@ -56,11 +58,23 @@ export interface VideoSettings {
   fontSize: number;
 }
 
+/** 背景に敷く動画。セリフはこの上に重ねる */
+export interface Movie {
+  path: string;
+  /** 長さ（秒） */
+  duration: number;
+  width: number;
+  height: number;
+  /** 動画のもとの音の大きさ（0〜100） */
+  volume: number;
+}
+
 export interface Project {
   version: 1;
   characters: Character[];
   lines: Line[];
   video: VideoSettings;
+  movie?: Movie;
 }
 
 export interface Settings {

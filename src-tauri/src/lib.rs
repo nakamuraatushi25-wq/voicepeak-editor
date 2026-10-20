@@ -187,7 +187,31 @@ struct Mp4Request {
     height: u32,
     fps: u32,
     background: String,
+    /// 背景動画。あれば単色の背景の上に、画面に収まる大きさで中央に置く
+    #[serde(default)]
+    movie: Option<MovieIn>,
     out: String,
+}
+
+#[derive(Deserialize)]
+struct MovieIn {
+    path: String,
+    /// もとの音の大きさ（0〜100）
+    volume: f64,
+}
+
+/// 動画に音声トラックがあるか。ffmpeg -i が出すストリーム一覧で判定する
+fn has_audio(ffmpeg: &str, path: &str) -> bool {
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-hide_banner", "-i", path]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd.output()
+        .map(|o| String::from_utf8_lossy(&o.stderr).contains("Audio:"))
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -229,11 +253,34 @@ async fn export_mp4(req: Mp4Request) -> Result<(), String> {
         );
     }
     graph += &format!(";[v{}]subtitles=subs.ass[out]", req.portraits.len());
+    let mut audio_out = String::from("1:a");
+    if let Some(m) = &req.movie {
+        // 背景動画は最後の入力。単色の背景に重ね、動画が終わったあとは単色に戻る
+        let input = req.portraits.len() + 2;
+        args.extend(["-i".into(), m.path.clone()]);
+        graph = graph.replacen(
+            "[0:v]null[v0]",
+            &format!(
+                "[{input}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,setsar=1,fps={fps}[mv];[0:v][mv]overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2:eof_action=pass[v0]",
+                w = req.width,
+                h = req.height,
+                fps = req.fps
+            ),
+            1,
+        );
+        if m.volume > 0.0 && has_audio(&req.ffmpeg, &m.path) {
+            graph += &format!(
+                ";[{input}:a]volume={v}[ma];[1:a][ma]amix=inputs=2:duration=first:normalize=0[aout]",
+                v = m.volume / 100.0
+            );
+            audio_out = "[aout]".into();
+        }
+    }
     args.extend(
         [
-            "-filter_complex", &graph, "-map", "[out]", "-map", "1:a", "-r",
+            "-filter_complex", &graph, "-map", "[out]", "-map", &audio_out, "-r",
             &req.fps.to_string(), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
-            "-shortest", &req.out,
+            "-t", &format!("{:.3}", req.total), "-shortest", &req.out,
         ]
         .map(String::from),
     );
@@ -348,6 +395,7 @@ mod tests {
             height: 180,
             fps: 30,
             background: "#202020".into(),
+            movie: None,
             out: mp4.to_string_lossy().into_owned(),
         }))
         .unwrap();
@@ -367,6 +415,63 @@ mod tests {
         let closed_px = probe("1.5");
         assert!(open_px[0] > open_px[2], "開いた口は赤: {open_px:?}");
         assert!(closed_px[2] > closed_px[0], "閉じた口は青: {closed_px:?}");
+    }
+
+    #[test]
+    #[ignore = "ffmpeg が必要"]
+    fn export_mp4_over_movie() {
+        let dir = tempfile::tempdir().unwrap();
+        // 赤い 2 秒の背景動画（音つき）と 1 秒の声
+        let movie = dir.path().join("movie.mp4");
+        let ok = Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=160x90:r=30:d=2"])
+            .args(["-f", "lavfi", "-i", "sine=f=220:d=2", "-shortest", "-pix_fmt", "yuv420p"])
+            .arg(&movie)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let wav = dir.path().join("line.wav");
+        let ok = Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=d=1:r=48000", "-ac", "1"])
+            .arg(&wav)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+
+        let mp4 = dir.path().join("out.mp4");
+        tauri::async_runtime::block_on(export_mp4(Mp4Request {
+            ffmpeg: "ffmpeg".into(),
+            portraits: vec![],
+            clips: vec![ClipIn { path: wav.to_string_lossy().into_owned(), start: 0.5 }],
+            total: 3.0,
+            ass: "[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n".into(),
+            width: 320,
+            height: 180,
+            fps: 30,
+            background: "#000000".into(),
+            movie: Some(MovieIn { path: movie.to_string_lossy().into_owned(), volume: 50.0 }),
+            out: mp4.to_string_lossy().into_owned(),
+        }))
+        .unwrap();
+
+        let probe = |t: &str| {
+            Command::new("ffmpeg")
+                .args(["-loglevel", "error", "-y", "-ss", t, "-i"])
+                .arg(&mp4)
+                .args(["-frames:v", "1", "-vf", "crop=4:4:158:88", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+                .output()
+                .unwrap()
+                .stdout
+        };
+        let during = probe("1.0");
+        let after = probe("2.5");
+        assert!(during[0] > 200 && during[2] < 60, "動画の間は赤: {during:?}");
+        assert!(after[0] < 40, "動画が終わったら背景色: {after:?}");
+        // 長さは total に合わせる
+        let out = Command::new("ffmpeg").args(["-hide_banner", "-i"]).arg(&mp4).output().unwrap();
+        let info = String::from_utf8_lossy(&out.stderr);
+        assert!(info.contains("Duration: 00:00:03.0") || info.contains("Duration: 00:00:02.9"), "{info}");
+        assert!(info.contains("Audio:"));
     }
 
     #[test]

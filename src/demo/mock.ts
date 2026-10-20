@@ -168,10 +168,12 @@ function pickFile(filters?: { extensions: string[] }[]): Promise<string | null> 
     input.type = "file";
     const exts = (filters ?? []).flatMap((f) => f.extensions).filter((e) => e !== "*");
     if (exts.some((e) => ["png", "jpg", "jpeg", "webp"].includes(e))) input.accept = "image/*";
+    else if (exts.includes("mp4")) input.accept = "video/*";
     else if (exts.length) input.accept = exts.map((e) => `.${e.split(".").pop()}`).join(",");
     input.onchange = () => {
       const f = input.files?.[0];
-      resolve(f ? URL.createObjectURL(f) : null);
+      // 表示用に元のファイル名を # のあとにつけておく
+      resolve(f ? `${URL.createObjectURL(f)}#${f.name}` : null);
     };
     input.addEventListener("cancel", () => resolve(null));
     input.click();
