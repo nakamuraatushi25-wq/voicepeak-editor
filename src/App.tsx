@@ -14,6 +14,7 @@ import { CharacterPanel } from "./components/CharacterPanel";
 import { ScriptEditor } from "./components/ScriptEditor";
 import { Timeline } from "./components/Timeline";
 import { Preview } from "./components/Preview";
+import { UpdateBanner } from "./components/UpdateBanner";
 
 const SETTINGS_KEY = "voicepeak-editor.settings";
 
@@ -289,6 +290,7 @@ export default function App() {
           <option value="srt">字幕（.srt）</option>
         </select>
         <button onClick={() => setDialog("settings")}>設定</button>
+        <UpdateBanner />
       </header>
 
       <main className="workspace">
